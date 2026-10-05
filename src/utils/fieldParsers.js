@@ -1044,23 +1044,32 @@ export function extractSubjectMarksTable(text, docType = "ms10") {
 
   for (const line of lines) {
     for (const subName of subjectKeywords) {
-      const subEsc = subName.replace(/\s+/g, "\\s*");
-      const re = new RegExp(`(?:^|[|\\s])(${subEsc})[|\\s]+(\\d{2,3})(?:[|\\s]+(\\d{2,3}|[—–-]))?(?:[|\\s]+(\\d{2,3}))?`, "i");
-      const m = line.match(re);
-      if (m) {
-        const digits = line.match(/\b\d{2,3}\b/g);
+      const subIdx = line.toUpperCase().indexOf(subName.toUpperCase());
+      if (subIdx !== -1) {
+        const afterText = line.substring(subIdx + subName.length);
+        const digits = afterText.match(/\b\d{1,3}\b/g);
         if (digits && digits.length > 0) {
-          const finalMarks = digits[digits.length - 1];
+          let finalMarks = digits[0];
+          let maxM = "100";
+          if (digits.length >= 2) {
+            if (parseInt(digits[1], 10) === 100 || parseInt(digits[1], 10) > parseInt(digits[0], 10)) {
+              finalMarks = digits[0];
+              maxM = digits[1];
+            } else {
+              finalMarks = digits[digits.length - 1];
+            }
+          }
           if (!subjects.some(s => s.subject.toUpperCase() === subName.toUpperCase())) {
             subjects.push({
               subject: subName,
               marks: finalMarks,
+              maxMarks: maxM,
               theory: digits.length > 1 ? digits[0] : finalMarks,
               practical: digits.length > 2 ? digits[1] : null,
             });
           }
+          break;
         }
-        break;
       }
     }
   }
@@ -1893,7 +1902,7 @@ export function extractCommunityCertificateData(rawText) {
 /**
  * Extracts Income Certificate details with multi-state recognition.
  */
-export function extractIncomeCertificateData(rawText) {
+export function extractIncomeCertificateData(rawText, options = {}) {
   const text = String(rawText || "");
 
   // Candidate / Father Name
@@ -2049,8 +2058,17 @@ export function extractIncomeCertificateData(rawText) {
   const stateDetected = detectState(text).state;
   const issuingAuthority = detectIssuingAuthority(text).issuingAuthority;
 
-  // Freshness calculation
-  const freshness = evaluateIncomeFreshness(issueDate, validUpto);
+  // Provenance rule: Ordinary OCR parsing must NEVER set isExpiryConfirmed to true automatically.
+  // Only explicit student confirmation or independently verified provenance passed in options may confirm a date.
+  // Missing metadata must remain needs_confirmation (unconfirmed_expiry).
+  const isExpiryConfirmed = options?.isExpiryConfirmed !== undefined
+    ? Boolean(options.isExpiryConfirmed)
+    : false;
+  const freshness = evaluateIncomeFreshness(issueDate, validUpto, {
+    ...options,
+    isExpiryConfirmed,
+    isConfirmed: isExpiryConfirmed,
+  });
 
   const nameCorrection = suggestOcrCorrections(name, "name");
   const certCorrection = suggestOcrCorrections(certNumber, "id");
@@ -2133,6 +2151,7 @@ export function extractIncomeCertificateData(rawText) {
     district,
     state: stateDetected,
     issuingAuthority,
+    isExpiryConfirmed,
     freshness,
     fieldConfidence: {
       name: nameConfidence,
@@ -2141,6 +2160,169 @@ export function extractIncomeCertificateData(rawText) {
       issueDate: issueDate ? (dateValidation.isValid ? 0.85 : 0.55) : 0,
     },
     structuredFields,
+  };
+}
+
+/**
+ * Extracts structured fields from an Aadhaar card image or scan.
+ * Never fabricates missing values.
+ */
+export function extractAadhaarData(rawText) {
+  if (!rawText || typeof rawText !== "string") return {};
+  const text = rawText.replace(/\r\n/g, "\n");
+
+  // 1. Aadhaar 12-digit UID (e.g. 1234 5678 9012 or 1234-5678-9012)
+  let rawAadhaarNumber = null;
+  let maskedAadhaarNumber = null;
+  const uidMatch = text.match(/\b(\d{4}\s\d{4}\s\d{4})\b/) || text.match(/\b(\d{12})\b/);
+  if (uidMatch) {
+    const rawDigits = uidMatch[1].replace(/\s+/g, "");
+    rawAadhaarNumber = rawDigits;
+    maskedAadhaarNumber = `•••• •••• ${rawDigits.slice(-4)}`;
+  }
+
+  // 2. Date of Birth / Year of Birth
+  let dob = null;
+  const dobMatch = text.match(/(?:dob|date\s+of\s+birth|பிறந்த\s+தேதி)\s*[:\-–—\s]\s*(\d{1,2}[/.-]\d{1,2}[/.-]\d{4})/i) ||
+    text.match(/\b(\d{2}[/-]\d{2}[/-]\d{4})\b/);
+  if (dobMatch) {
+    dob = dobMatch[1].replace(/[/.]/g, "-");
+  } else {
+    const yobMatch = text.match(/(?:year\s+of\s+birth|yob)\s*[:\-–—\s]\s*(\d{4})/i);
+    if (yobMatch) dob = yobMatch[1];
+  }
+
+  // 3. Gender
+  let gender = null;
+  if (/\b(?:female|பெண்)\b/i.test(text)) gender = "Female";
+  else if (/\b(?:male|ஆண்)\b/i.test(text)) gender = "Male";
+  else if (/\b(?:transgender|திருநங்கை)\b/i.test(text)) gender = "Transgender";
+
+  // 4. Candidate Name: Look for text lines right before DOB or following Govt of India / UIDAI
+  let name = null;
+  const lines = text.split("\n").map(l => l.trim()).filter(Boolean);
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i];
+    if (/(?:government\s+of\s+india|unique\s+identification|uidai|mera\s+aadhaar)/i.test(l)) continue;
+    if (/(?:dob|date\s+of\s+birth|gender|male|female|\d{4}\s\d{4})/i.test(l)) continue;
+    // Check if line looks like an Indian person's name (2-4 words, letters only)
+    if (/^[A-Z][A-Za-z.\s]{3,35}$/.test(l) && !/(?:authority|identity|enrolment|address|help)/i.test(l)) {
+      name = l;
+      break;
+    }
+  }
+
+  const issuingAuthority = "Unique Identification Authority of India (UIDAI)";
+  const stateDetected = detectState(text).state;
+
+  return {
+    name,
+    dob,
+    gender,
+    aadhaarNumber: maskedAadhaarNumber,
+    rawAadhaarNumber,
+    issuingAuthority,
+    state: stateDetected,
+    fieldConfidence: {
+      name: name ? 0.88 : 0,
+      dob: dob ? 0.92 : 0,
+      aadhaarNumber: rawAadhaarNumber ? 0.95 : 0,
+      gender: gender ? 0.90 : 0,
+    },
+    structuredFields: {
+      name: { field: "name", rawValue: name, normalizedValue: name, confidence: name ? 88 : 0 },
+      dob: { field: "dob", rawValue: dob, normalizedValue: dob, confidence: dob ? 92 : 0 },
+      aadhaarNumber: { field: "aadhaarNumber", rawValue: maskedAadhaarNumber, normalizedValue: rawAadhaarNumber, confidence: rawAadhaarNumber ? 95 : 0 },
+      gender: { field: "gender", rawValue: gender, normalizedValue: gender, confidence: gender ? 90 : 0 },
+    },
+  };
+}
+
+/**
+ * Extracts structured fields from a Bank passbook, cancelled cheque, or statement.
+ * Masks account number for privacy. Never fabricates missing values.
+ */
+export function extractBankDocumentData(rawText) {
+  if (!rawText || typeof rawText !== "string") return {};
+  const text = rawText.replace(/\r\n/g, "\n");
+
+  // 1. Account Number
+  let rawAccountNumber = null;
+  let maskedAccountNumber = null;
+  const accMatch = text.match(/(?:account\s*no|a\/c\s*no|account\s*number)\s*[:\-–—\s.]*(\d{9,18})/i) ||
+    text.match(/\b(\d{11,16})\b/);
+  if (accMatch) {
+    rawAccountNumber = accMatch[1];
+    maskedAccountNumber = `••••••••${rawAccountNumber.slice(-4)}`;
+  }
+
+  // 2. IFSC Code (4 letters, 0, 6 alphanumeric chars e.g. SBIN0001234)
+  let ifsc = null;
+  const ifscMatch = text.match(/\b([A-Z]{4}0[A-Z0-9]{6})\b/i);
+  if (ifscMatch) {
+    ifsc = ifscMatch[1].toUpperCase();
+  }
+
+  // 3. Bank Name
+  let bankName = null;
+  const knownBanks = [
+    "State Bank of India",
+    "Canara Bank",
+    "Indian Bank",
+    "Indian Overseas Bank",
+    "Bank of Baroda",
+    "Punjab National Bank",
+    "Union Bank of India",
+    "HDFC Bank",
+    "ICICI Bank",
+    "Axis Bank",
+    "Kotak Mahindra Bank",
+    "Central Bank of India",
+    "UCO Bank",
+    "Bank of India",
+  ];
+  for (const b of knownBanks) {
+    if (new RegExp(b, "i").test(text)) {
+      bankName = b;
+      break;
+    }
+  }
+
+  // 4. Account Type (Single / Savings)
+  let accountType = "Single";
+  if (/\b(?:joint\s+account|jointly)\b/i.test(text)) {
+    accountType = "Joint";
+  } else if (/\b(?:savings|sb\s+a\/c|saving\s+bank)\b/i.test(text)) {
+    accountType = "Single";
+  }
+
+  // 5. Account Holder Name
+  let accountHolder = null;
+  const nameMatch = text.match(/(?:name\s*[:\-–—\s]|holder(?:\s*name)?\s*[:\-–—\s]|shri|smt|m\/s)\s*([A-Z][A-Za-z.\s]{3,35})(?=\n|\r|$)/i);
+  if (nameMatch) {
+    accountHolder = nameMatch[1].trim();
+  }
+
+  return {
+    accountHolder,
+    name: accountHolder,
+    accountNumber: maskedAccountNumber,
+    rawAccountNumber,
+    ifsc,
+    bankName,
+    accountType,
+    fieldConfidence: {
+      accountHolder: accountHolder ? 0.85 : 0,
+      accountNumber: rawAccountNumber ? 0.92 : 0,
+      ifsc: ifsc ? 0.95 : 0,
+      bankName: bankName ? 0.90 : 0,
+    },
+    structuredFields: {
+      accountHolder: { field: "accountHolder", rawValue: accountHolder, normalizedValue: accountHolder, confidence: accountHolder ? 85 : 0 },
+      accountNumber: { field: "accountNumber", rawValue: maskedAccountNumber, normalizedValue: rawAccountNumber, confidence: rawAccountNumber ? 92 : 0 },
+      ifsc: { field: "ifsc", rawValue: ifsc, normalizedValue: ifsc, confidence: ifsc ? 95 : 0 },
+      bankName: { field: "bankName", rawValue: bankName, normalizedValue: bankName, confidence: bankName ? 90 : 0 },
+    },
   };
 }
 

@@ -15,14 +15,34 @@
  */
 
 export const SUPPORTED_DOC_TYPES = {
+  marksheet: { id: "marksheet", label: "Marksheet",                icon: "📋", color: "#3b82f6" },
   ms10:      { id: "ms10",      label: "10th Marksheet",           icon: "📘", color: "#3b82f6" },
   ms12:      { id: "ms12",      label: "12th Marksheet",           icon: "📗", color: "#8b5cf6" },
-  community: { id: "community", label: "Community Certificate",    icon: "📜", color: "#f59e0b" },
+  community: { id: "community", label: "Community / Category Certificate", icon: "📜", color: "#f59e0b" },
   income:    { id: "income",    label: "Income Certificate",       icon: "💰", color: "#10b981" },
   aadhaar:   { id: "aadhaar",   label: "Aadhaar Card",             icon: "🪪", color: "#6366f1" },
-  bankpass:  { id: "bankpass",  label: "Bank Passbook",            icon: "🏦", color: "#ec4899" },
-  unknown:   { id: "unknown",   label: "Unknown Document",         icon: "📄", color: "#94a3b8" },
+  bankpass:  { id: "bankpass",  label: "Bank Document",            icon: "🏦", color: "#ec4899" },
+  other:     { id: "other",     label: "Other / Unknown",          icon: "📄", color: "#94a3b8" },
+  unknown:   { id: "unknown",   label: "Other / Unknown",          icon: "📄", color: "#94a3b8" },
 };
+
+export const STANDARD_CATEGORIES = [
+  { id: "marksheet", label: "Marksheet", icon: "📋", color: "#3b82f6", desc: "Board marksheet (10th, 12th, or college marksheet)" },
+  { id: "income", label: "Income Certificate", icon: "💰", color: "#10b981", desc: "Revenue issued annual family income certificate" },
+  { id: "community", label: "Community / Category Certificate", icon: "📜", color: "#f59e0b", desc: "Govt-issued community, caste, or category certificate" },
+  { id: "aadhaar", label: "Aadhaar", icon: "🪪", color: "#6366f1", desc: "UIDAI-issued Aadhaar identification card" },
+  { id: "bankpass", label: "Bank Document", icon: "🏦", color: "#ec4899", desc: "Bank passbook, statement or cancelled cheque" },
+  { id: "unknown", label: "Other / Unknown", icon: "📄", color: "#94a3b8", desc: "Other scholarship supporting document or unknown format" },
+];
+
+export function getStandardCategory(type) {
+  if (type === "ms10" || type === "ms12" || type === "marksheet") return "marksheet";
+  if (type === "income") return "income";
+  if (type === "community") return "community";
+  if (type === "aadhaar") return "aadhaar";
+  if (type === "bankpass" || type === "bank") return "bankpass";
+  return "unknown";
+}
 
 const CLASSIFICATION_RULES = {
   ms10: [
@@ -517,6 +537,40 @@ export function detectDocumentTitle(rawText) {
     confidence: 15,
     isIdentified: false,
     evidence: [],
+  };
+}
+
+/**
+ * Suggests a document type using locally extracted text and classification logic.
+ * Never forces an uncertain classification.
+ * 
+ * @param {string} text Extracted OCR text
+ * @param {Object} fileInfo { name, type }
+ * @returns {Object} Suggested document type with confidence and confirmation status
+ */
+export function suggestDocumentType(text, fileInfo = {}) {
+  const detected = detectDocumentType(text, fileInfo);
+  const confidence = typeof detected.confidence === "number" ? detected.confidence : 0;
+  const isUncertain = confidence < 60 || detected.type === "unknown";
+
+  const standardCat = getStandardCategory(detected.type);
+  const suggested = isUncertain ? "Other / Unknown" : (standardCat || detected.type);
+
+  return {
+    suggestedType: suggested,
+    rawType: detected.type,
+    standardCategory: standardCat,
+    confidence,
+    isUncertain,
+    needsConfirmation: true,
+    requiresUserConfirmation: true,
+    confirmed: false,
+    label: isUncertain
+      ? "Unknown / Insufficient Signals — Please Confirm"
+      : (SUPPORTED_DOC_TYPES[detected.type]?.label || detected.type),
+    reasons: detected.reasons || [],
+    state: detected.state || null,
+    issuingAuthority: detected.issuingAuthority || null,
   };
 }
 

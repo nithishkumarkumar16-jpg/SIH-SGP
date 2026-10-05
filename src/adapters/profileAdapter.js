@@ -418,19 +418,34 @@ export function adaptDocumentsToEligibilityProfile({
   }
 
   // 4. Annual Family Income Selection & Metadata
+  // A parent-held income certificate may supply income only after the user confirms the relationship and what the income amount represents.
+  // Do not automatically treat a parent's individual income as total family income.
   let incomeVal = "";
   let rawIncomeNum = null;
+  const isParentHeld = ds?.income?.holderRelationship === "Parent" || incDoc.holderRelationship === "Parent" || incomeApplicant === "parent";
+  const isRelConfirmed = ds?.income?.holderRelationship && ds?.income?.holderRelationship !== "Unknown";
+
   if (incDoc.income !== undefined && incDoc.income !== null && incDoc.income !== "") {
     const cleanInc = typeof incDoc.income === "number" ? incDoc.income : parseInt(String(incDoc.income).replace(/[^0-9]/g, ""), 10);
     if (!isNaN(cleanInc) && cleanInc > 0) {
-      rawIncomeNum = cleanInc;
-      incomeVal = String(cleanInc);
-      fieldMetadata.income = {
-        value: cleanInc,
-        source: "Income Certificate OCR",
-        confidence: incConf,
-        status: getConfidenceStatus(incConf),
-      };
+      if (isParentHeld && !isRelConfirmed) {
+        fieldMetadata.income = {
+          value: null,
+          source: "Income Certificate (Parent relationship needs confirmation)",
+          confidence: incConf,
+          status: "confirm",
+          note: "Parent relationship confirmation required before using income for family eligibility.",
+        };
+      } else {
+        rawIncomeNum = cleanInc;
+        incomeVal = String(cleanInc);
+        fieldMetadata.income = {
+          value: cleanInc,
+          source: isParentHeld ? "Income Certificate (Confirmed Parent)" : "Income Certificate OCR",
+          confidence: incConf,
+          status: getConfidenceStatus(incConf),
+        };
+      }
     }
   }
   if (!incomeVal && studentIncome) {
@@ -448,11 +463,12 @@ export function adaptDocumentsToEligibilityProfile({
   }
 
   // 5. 10th & 12th Marks / Percentages
+  // Safety rule: Missing maximum marks does not generate a fabricated percentage.
   let marks10Val = null;
   if (tenth.percentage) {
     const p = parseFloat(String(tenth.percentage).replace("%", ""));
     if (!isNaN(p)) marks10Val = p;
-  } else if (tenth.marksScored && tenth.maxMarks) {
+  } else if (tenth.marksScored !== undefined && tenth.maxMarks !== undefined && tenth.marksScored !== null && tenth.maxMarks !== null) {
     const scored = parseFloat(tenth.marksScored);
     const max = parseFloat(tenth.maxMarks);
     if (!isNaN(scored) && !isNaN(max) && max > 0) {
@@ -473,7 +489,7 @@ export function adaptDocumentsToEligibilityProfile({
   if (twelfth.percentage) {
     const p = parseFloat(String(twelfth.percentage).replace("%", ""));
     if (!isNaN(p)) marks12Val = p;
-  } else if (twelfth.marksScored && twelfth.maxMarks) {
+  } else if (twelfth.marksScored !== undefined && twelfth.maxMarks !== undefined && twelfth.marksScored !== null && twelfth.maxMarks !== null) {
     const scored = parseFloat(twelfth.marksScored);
     const max = parseFloat(twelfth.maxMarks);
     if (!isNaN(scored) && !isNaN(max) && max > 0) {
@@ -505,18 +521,22 @@ export function adaptDocumentsToEligibilityProfile({
   };
 
   // 7. Extract District & State if available
-  const district = commDoc.district || incDoc.district || undefined;
-  const state = commDoc.state || incDoc.state || "Tamil Nadu";
+  // Safety rule: Never infer domicile solely from the document's issuing district/state.
+  const district = undefined;
+  const state = undefined;
 
   // 8. Document Conflict & Inconsistency Warnings
+  // Safety rule: Do not combine different students' documents into one eligibility profile.
   const conflictWarnings = [];
   if (matrixData) {
     if (matrixData.hasNameMismatch) {
       conflictWarnings.push({
         type: "danger",
         field: "name",
-        message: "Different applicant names detected across uploaded documents. Please verify your legal name.",
+        message: "Different applicant names detected across uploaded documents. Resolve applicant identity before combining details into scholarship matching.",
       });
+      // Do not merge conflicting document details into applicant profile
+      nameVal = aadharName ? aadharName.trim() : "";
     } else if (matrixData.hasNameMinor) {
       conflictWarnings.push({
         type: "warning",

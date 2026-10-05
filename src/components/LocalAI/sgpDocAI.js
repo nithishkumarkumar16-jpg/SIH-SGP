@@ -18,9 +18,40 @@ import {
   extractMarksheetData,
   extractCommunityCertificateData,
   extractIncomeCertificateData,
+  extractAadhaarData,
+  extractBankDocumentData,
 } from "../../utils/fieldParsers";
 
 export { detectDocumentType, validateDocumentSlot };
+
+/**
+ * Explains how OCR confidence is computed and documented.
+ * Strictly separates OCR recognition confidence from heuristic parsing.
+ */
+export const OCR_CONFIDENCE_METHODOLOGY = {
+  aggregation: "Arithmetic mean of Tesseract word confidence scores across matched token bounding boxes.",
+  distinction: "Represents optical character recognition confidence score (0-100), not measured semantic accuracy.",
+  description:
+    "Arithmetic mean of word-level OCR confidence scores in the matched line region. Wording: 'OCR confidence: X/100 — please confirm.' Never represents measured accuracy.",
+  toString() {
+    return this.description;
+  },
+};
+
+/**
+ * Formats genuine OCR confidence into honest, non-misleading wording.
+ * Never displays "X% accurate". Shows "Confidence unavailable." when missing.
+ * 
+ * @param {number|null} confidence 0-100 or null
+ * @returns {string}
+ */
+export function formatOcrConfidence(confidence) {
+  if (confidence === null || confidence === undefined || isNaN(confidence)) {
+    return "Confidence unavailable.";
+  }
+  const rounded = Math.round(confidence);
+  return `OCR confidence: ${rounded}/100 — please confirm.`;
+}
 
 
 export function getPdfWorkerSrc() {
@@ -157,10 +188,13 @@ async function prepareRawImage(file) {
  * - line and word bounding boxes & confidences
  * - multi-pass binarized variant for marksheets to eliminate security patterns
  */
-export async function runOCR(file, onProgress, qualityAssessment = null, isMarksheet = false) {
-  const worker = await createWorker("eng", 1, {
+export async function runOCR(file, onProgress, qualityAssessment = null, isMarksheet = false, lang = "eng", options = {}) {
+  const ocrLang = options.langs || (lang === "tam" ? "tam" : (lang === "eng+tam" || lang === "all" ? ["eng", "tam"] : "eng"));
+
+  const worker = await createWorker(ocrLang, 1, {
     ...getLocalTesseractOptions(),
     logger: (m) => {
+      if (options.isCancelled?.() || options.signal?.aborted) return;
       if (m.status === "recognizing text" && onProgress) {
         onProgress(Math.round(m.progress * 100));
       }
@@ -168,6 +202,10 @@ export async function runOCR(file, onProgress, qualityAssessment = null, isMarks
   });
 
   try {
+    if (options.isCancelled?.() || options.signal?.aborted) {
+      throw new Error("OCR operation was cancelled.");
+    }
+
     const rawPages = file.type === "application/pdf"
       ? await renderPDFPages(file)
       : [await prepareRawImage(file)];
@@ -176,15 +214,17 @@ export async function runOCR(file, onProgress, qualityAssessment = null, isMarks
     const allLines = [];
     const confidences = [];
 
-    // Helper to safely extract lines with bounding boxes from Tesseract result
-    const extractLinesFromData = (tData, canvas) => {
+    // Helper to safely extract lines with bounding boxes and page number from Tesseract result
+    const extractLinesFromData = (tData, canvas, pageIndex = 0) => {
       if (!tData) return [];
+      const pageNum = pageIndex + 1;
       if (Array.isArray(tData.lines) && tData.lines.length > 0) {
         return tData.lines.map(l => ({
           text: l.text || "",
           confidence: l.confidence || 0,
           bbox: l.bbox || null,
-          words: Array.isArray(l.words) ? l.words.map(w => ({ text: w.text, confidence: w.confidence, bbox: w.bbox })) : [],
+          pageNumber: pageNum,
+          words: Array.isArray(l.words) ? l.words.map(w => ({ text: w.text, confidence: w.confidence, bbox: w.bbox, pageNumber: pageNum })) : [],
           pageWidth: canvas ? canvas.width : 0,
           pageHeight: canvas ? canvas.height : 0,
         }));
@@ -200,7 +240,8 @@ export async function runOCR(file, onProgress, qualityAssessment = null, isMarks
                     text: l.text || "",
                     confidence: l.confidence || 0,
                     bbox: l.bbox || null,
-                    words: Array.isArray(l.words) ? l.words.map(w => ({ text: w.text, confidence: w.confidence, bbox: w.bbox })) : [],
+                    pageNumber: pageNum,
+                    words: Array.isArray(l.words) ? l.words.map(w => ({ text: w.text, confidence: w.confidence, bbox: w.bbox, pageNumber: pageNum })) : [],
                     pageWidth: canvas ? canvas.width : 0,
                     pageHeight: canvas ? canvas.height : 0,
                   });
@@ -215,13 +256,16 @@ export async function runOCR(file, onProgress, qualityAssessment = null, isMarks
 
     // Pass 1: Standard contrast-enhanced OCR
     for (let index = 0; index < rawPages.length; index++) {
+      if (options.isCancelled?.() || options.signal?.aborted) {
+        throw new Error("OCR operation was cancelled.");
+      }
       const standardCanvas = preprocessCanvasForOCR(rawPages[index], qualityAssessment, "contrast");
       const { data } = await worker.recognize(standardCanvas, {}, { blocks: true, text: true });
       pagesText.push(data.text || "");
       if (typeof data.confidence === "number" && !isNaN(data.confidence) && data.confidence > 0) {
         confidences.push(data.confidence);
       }
-      allLines.push(...extractLinesFromData(data, standardCanvas));
+      allLines.push(...extractLinesFromData(data, standardCanvas, index));
     }
 
     const avgConfidence = confidences.length
@@ -235,14 +279,16 @@ export async function runOCR(file, onProgress, qualityAssessment = null, isMarks
     if (shouldRunMultiPass && rawPages.length > 0) {
       const variantsToRun = ["normalized", "sharpened", "binarized"];
       for (const variant of variantsToRun) {
+        if (options.isCancelled?.() || options.signal?.aborted) break;
         try {
           const vPagesText = [];
           const vLines = [];
           for (let index = 0; index < rawPages.length; index++) {
+            if (options.isCancelled?.() || options.signal?.aborted) break;
             const vCanvas = preprocessCanvasForOCR(rawPages[index], qualityAssessment, variant);
             const { data: vData } = await worker.recognize(vCanvas, {}, { blocks: true, text: true });
             vPagesText.push(vData.text || "");
-            vLines.push(...extractLinesFromData(vData, vCanvas));
+            vLines.push(...extractLinesFromData(vData, vCanvas, index));
           }
           multiPasses.push({
             variant,
@@ -474,14 +520,14 @@ function validateExtractedDocument(type, data) {
   if (type === "income") {
     if (!data.name) warnings.push("Applicant / parent name not detected on income certificate.");
     if (!data.incomeNumber && !data.income) issues.push("Annual income amount not detected.");
-    if (!data.issueDate) warnings.push("Issue date not detected — certificates should be from current financial year.");
+    if (!data.issueDate) warnings.push("Issue date not detected — document acceptance needs confirmation for the selected scheme.");
 
     if (data.issueDate) {
       const parts = data.issueDate.split("-");
       if (parts.length === 3) {
         const issued = new Date(`${parts[2]}-${parts[1]}-${parts[0]}`);
         const ageMonths = (new Date() - issued) / (1000 * 60 * 60 * 24 * 30);
-        if (ageMonths > 12) issues.push("Income certificate is older than 12 months — renewal required for NSP.");
+        if (ageMonths > 12) warnings.push("Income certificate is older than 12 months — document acceptance needs confirmation for the selected scheme.");
         else if (ageMonths > 6) warnings.push("Income certificate is 6-12 months old — fresh certificate recommended.");
       }
     }
@@ -504,7 +550,11 @@ function validateExtractedDocument(type, data) {
  * 8. Field Normalization & Validation
  * 9. Independent Confidence Scoring
  */
-export async function extractDocumentData(file, slotType, onProgress) {
+export async function extractDocumentData(file, slotType, onProgress, options = {}) {
+  if (options.isCancelled?.() || options.signal?.aborted) {
+    return { cancelled: true, success: false, error: "Operation cancelled" };
+  }
+
   onProgress?.({ stage: "quality", pct: 10, msg: "Assessing image quality..." });
 
   // 1. Image / PDF Quality Assessment
@@ -520,6 +570,10 @@ export async function extractDocumentData(file, slotType, onProgress) {
       warnings: ["Quality assessment was skipped."],
       isUsable: true,
     };
+  }
+
+  if (options.isCancelled?.() || options.signal?.aborted) {
+    return { cancelled: true, success: false, error: "Operation cancelled" };
   }
 
   // 2. Adaptive Enhancement & Quality Re-check for FAIR or POOR documents
@@ -538,22 +592,34 @@ export async function extractDocumentData(file, slotType, onProgress) {
     }
   }
 
+  if (options.isCancelled?.() || options.signal?.aborted) {
+    return { cancelled: true, success: false, error: "Operation cancelled" };
+  }
+
   onProgress?.({ stage: "ocr", pct: 20, msg: "Starting OCR scan..." });
 
   // 3. Preprocessing & OCR
-  const isMarksheetSlot = slotType === "ms10" || slotType === "ms12";
+  const isMarksheetSlot = slotType === "ms10" || slotType === "ms12" || slotType === "marksheet";
   let ocrResult;
   try {
+    const ocrLang = options.lang || (options.langs ? options.langs : "eng");
     ocrResult = await runOCR(file, (pct) => {
       onProgress?.({ stage: "ocr", pct: 20 + Math.round(pct * 0.6), msg: `Reading document... ${pct}%` });
-    }, qualityResult, isMarksheetSlot);
+    }, qualityResult, isMarksheetSlot, ocrLang, options);
   } catch (err) {
+    if (options.isCancelled?.() || options.signal?.aborted || err.message?.includes("cancelled")) {
+      return { cancelled: true, success: false, error: "Operation was cancelled." };
+    }
     return {
       success: false,
       error: `OCR failed: ${err.message}`,
       rawText: "",
       quality: qualityResult,
     };
+  }
+
+  if (options.isCancelled?.() || options.signal?.aborted) {
+    return { cancelled: true, success: false, error: "Operation cancelled" };
   }
 
   const rawText = ocrResult.text || "";
@@ -572,15 +638,16 @@ export async function extractDocumentData(file, slotType, onProgress) {
 
   // 6. Document-Specific Field Extraction with Multi-Pass & Geometry
   let extracted = {};
-  if (type === "ms10" || type === "ms12") {
-    const pass1Data = extractMarksheetData({ text: rawText, lines: ocrResult.lines }, type);
+  if (type === "ms10" || type === "ms12" || type === "marksheet") {
+    const parseType = type === "marksheet" ? "ms10" : type;
+    const pass1Data = extractMarksheetData({ text: rawText, lines: ocrResult.lines }, parseType);
     const passResults = [pass1Data];
     if (ocrResult.multiPasses && ocrResult.multiPasses.length > 0) {
       for (const mp of ocrResult.multiPasses) {
-        passResults.push(extractMarksheetData(mp, type));
+        passResults.push(extractMarksheetData(mp, parseType));
       }
     } else if (ocrResult.multiPass) {
-      passResults.push(extractMarksheetData(ocrResult.multiPass, type));
+      passResults.push(extractMarksheetData(ocrResult.multiPass, parseType));
     }
     extracted = reconcileMarksheetPasses(...passResults);
   } else if (type === "community") {
@@ -601,8 +668,12 @@ export async function extractDocumentData(file, slotType, onProgress) {
       }
     }
     extracted = reconcileCertificatePasses(...passResults);
+  } else if (type === "aadhaar") {
+    extracted = extractAadhaarData(rawText);
+  } else if (type === "bankpass" || type === "bank") {
+    extracted = extractBankDocumentData(rawText);
   } else {
-    // Fallback extraction
+    // Fallback extraction for unknown/other documents
     extracted = {
       name: rawText.match(/(?:name\s*[:-]?\s*)([A-Z][A-Za-z\s.]{3,40})/i)?.[1] || null,
     };
@@ -634,7 +705,6 @@ export async function extractDocumentData(file, slotType, onProgress) {
       warnings.unshift("Document quality is poor even after adaptive enhancement. Fields cannot be reliably verified; please verify all details manually or upload a clearer scan.");
     }
   }
-
 
   // 8. Multi-Factor Confidence Scoring
   const fieldConfValues = Object.values(extracted.fieldConfidence || {}).filter(Number.isFinite);
@@ -670,11 +740,17 @@ export async function extractDocumentData(file, slotType, onProgress) {
     warnings,
     quality: qualityResult,
     ocrConfidence,
+    ocrConfidenceFormatted: formatOcrConfidence(ocrConfidence),
+    ocrConfidenceAggregation: OCR_CONFIDENCE_METHODOLOGY,
+    uploadedAt: options.uploadedAt || new Date().toISOString(),
+    issueDate: extracted.issueDate || null,
+    validUpto: extracted.validUpto || null,
     fieldConfidence,
     fieldConfidences: extracted.fieldConfidence || {},
     classificationConfidence,
     confidence: overallConfidence,
     rawText,
+    lines: ocrResult?.lines || [],
     isValid: issues.length === 0,
     documentTypeValid: slotValidation.status !== "mismatch",
     fieldsIncomplete: (type === "ms10" || type === "ms12") && (!extracted.name || !extracted.marksScored || !extracted.year),

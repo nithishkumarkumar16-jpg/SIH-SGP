@@ -362,6 +362,79 @@ export function deskewCanvas(canvas, angleDegrees) {
 }
 
 /**
+ * Rotates canvas by 90 degrees clockwise or counter-clockwise.
+ * 
+ * @param {HTMLCanvasElement} canvas
+ * @param {boolean} clockwise
+ * @returns {HTMLCanvasElement}
+ */
+export function rotateCanvas90(canvas, clockwise = true) {
+  if (!canvas) return canvas;
+  const target = document.createElement("canvas");
+  target.width = canvas.height;
+  target.height = canvas.width;
+  try {
+    const ctx = target.getContext("2d");
+    if (ctx) {
+      ctx.translate(target.width / 2, target.height / 2);
+      ctx.rotate((clockwise ? 90 : -90) * Math.PI / 180);
+      ctx.drawImage(canvas, -canvas.width / 2, -canvas.height / 2);
+    }
+  } catch (e) {
+    // jsdom fallback
+  }
+  return target;
+}
+
+/**
+ * Rotates an image file by 90 degrees in browser memory.
+ * Preserves original filename and MIME type.
+ * 
+ * @param {File} file
+ * @param {boolean} clockwise
+ * @returns {Promise<File>}
+ */
+export async function rotateImageFile(file, clockwise = true) {
+  if (!file || file.type === "application/pdf") return file;
+  try {
+    let img;
+    if (typeof createImageBitmap === "function") {
+      img = await createImageBitmap(file);
+    } else {
+      img = await new Promise((resolve, reject) => {
+        const i = new Image();
+        const url = URL.createObjectURL(file);
+        i.onload = () => { URL.revokeObjectURL(url); resolve(i); };
+        i.onerror = () => { URL.revokeObjectURL(url); reject(new Error("Image decode failed")); };
+        i.src = url;
+      });
+    }
+    const canvas = document.createElement("canvas");
+    canvas.width = img.width;
+    canvas.height = img.height;
+    const ctx = canvas.getContext("2d");
+    if (ctx) ctx.drawImage(img, 0, 0);
+    img.close?.();
+
+    const rotated = rotateCanvas90(canvas, clockwise);
+    const blob = await new Promise((resolve) => {
+      if (typeof rotated.toBlob === "function") {
+        rotated.toBlob(resolve, file.type || "image/jpeg", 0.95);
+      } else {
+        resolve(null);
+      }
+    });
+    cleanupCanvas(canvas);
+    cleanupCanvas(rotated);
+    if (!blob) return file;
+    return new File([blob], file.name, { type: file.type || "image/jpeg", lastModified: Date.now() });
+  } catch (err) {
+    console.warn("Image rotation warning:", err);
+    return file;
+  }
+}
+
+/**
  * Frees canvas memory by clearing dimensions and buffer.
  * 
  * @param {HTMLCanvasElement} canvas
@@ -375,6 +448,81 @@ export function cleanupCanvas(canvas) {
     // Memory cleanup safeguard
   }
 }
+
+/**
+ * Crops a sub-region from an image file using HTMLCanvasElement.
+ * Preserves memory limits and exports a fresh File object.
+ * 
+ * @param {File} file 
+ * @param {Object} cropBox { xPct, yPct, widthPct, heightPct } (0-1 or 0-100)
+ * @returns {Promise<File>} Cropped File object
+ */
+export async function cropImageFile(file, cropBox) {
+  if (!file || !cropBox) return file;
+  try {
+    let img;
+    if (typeof createImageBitmap === "function") {
+      img = await createImageBitmap(file);
+    } else if (typeof URL !== "undefined" && typeof URL.createObjectURL === "function" && typeof Image !== "undefined") {
+      img = await new Promise((resolve, reject) => {
+        const i = new Image();
+        const url = URL.createObjectURL(file);
+        i.onload = () => { URL.revokeObjectURL(url); resolve(i); };
+        i.onerror = () => { URL.revokeObjectURL(url); reject(new Error("Image decode failed")); };
+        i.src = url;
+      });
+    } else {
+      return file;
+    }
+
+    const imgW = img.width;
+    const imgH = img.height;
+
+    // Convert percentages to pixel coordinates
+    const xPct = cropBox.xPct !== undefined ? (cropBox.xPct > 1 ? cropBox.xPct / 100 : cropBox.xPct) : 0;
+    const yPct = cropBox.yPct !== undefined ? (cropBox.yPct > 1 ? cropBox.yPct / 100 : cropBox.yPct) : 0;
+    const wPct = cropBox.widthPct !== undefined ? (cropBox.widthPct > 1 ? cropBox.widthPct / 100 : cropBox.widthPct) : 1;
+    const hPct = cropBox.heightPct !== undefined ? (cropBox.heightPct > 1 ? cropBox.heightPct / 100 : cropBox.heightPct) : 1;
+
+    const sx = Math.max(0, Math.min(imgW - 10, Math.round(xPct * imgW)));
+    const sy = Math.max(0, Math.min(imgH - 10, Math.round(yPct * imgH)));
+    const sw = Math.max(10, Math.min(imgW - sx, Math.round(wPct * imgW)));
+    const sh = Math.max(10, Math.min(imgH - sy, Math.round(hPct * imgH)));
+
+    const canvas = document.createElement("canvas");
+    canvas.width = sw;
+    canvas.height = sh;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return file;
+
+    ctx.drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
+    img.close?.();
+
+    const blob = await new Promise((resolve) => {
+      if (typeof canvas.toBlob === "function") {
+        canvas.toBlob(resolve, file.type || "image/jpeg", 0.95);
+      } else {
+        resolve(null);
+      }
+    });
+
+    cleanupCanvas(canvas);
+    if (!blob) return file;
+
+    const nameParts = file.name.split(".");
+    const ext = nameParts.length > 1 ? nameParts.pop() : "jpg";
+    const croppedName = `${nameParts.join(".")}_cropped.${ext}`;
+
+    return new File([blob], croppedName, {
+      type: file.type || "image/jpeg",
+      lastModified: Date.now(),
+    });
+  } catch (err) {
+    console.warn("Image crop warning:", err);
+    return file;
+  }
+}
+
 
 
 

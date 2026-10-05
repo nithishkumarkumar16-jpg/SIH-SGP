@@ -157,7 +157,7 @@ app.post("/api/send-report", limiter(10,"Too many reports."), async (req,res) =>
     const verification = await verifyEnterpriseCaptcha(data.captchaToken, req);
     if (!verification.ok) return res.status(verification.status).json({ error: verification.error });
   } else if (!IS_PRODUCTION) {
-    if (data.captchaToken !== "local-dev-mock-captcha-token" && data.captchaToken.length < 20) {
+    if (data.captchaToken !== "local-dev-mock-captcha-token") {
       return res.status(403).json({ error: "CAPTCHA verification failed." });
     }
   } else {

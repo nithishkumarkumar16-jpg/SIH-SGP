@@ -12,6 +12,7 @@ import {
   maskSensitiveIdentifier,
   computeFieldConfidence,
 } from "./fieldParsers";
+import { evaluateDocumentValidity } from "./validityRules";
 
 
 describe("fieldParsers", () => {
@@ -383,7 +384,12 @@ describe("fieldParsers", () => {
       expect(res.district).toBe("Salem");
       expect(res.issuingAuthority).toBe("Zonal Deputy Tahsildar");
       expect(res.state).toBe("Tamil Nadu");
-      expect(res.freshness.status).toBe("expired");
+      // Ordinary OCR parsing must never set isExpiryConfirmed to true automatically:
+      expect(res.freshness.status).toBe("needs_confirmation");
+      expect(res.freshness.stateKey).toBe("unconfirmed_expiry");
+      // Explicit provenance / student confirmation confirms the expired date:
+      const confirmedRes = extractIncomeCertificateData(text, { isExpiryConfirmed: true });
+      expect(confirmedRes.freshness.status).toBe("expired");
     });
 
     test("extracts Gujarat 3-year income certificate with Talati Cum Mantri authority and 3-year validity", () => {
@@ -417,7 +423,12 @@ describe("fieldParsers", () => {
       expect(res.district).toBe("Devbhumi Dwarka");
       expect(res.issuingAuthority).toBe("Talati Cum Mantri");
       expect(res.state).toBe("Gujarat");
-      expect(res.freshness.status).toBe("valid");
+      // Ordinary OCR parsing without confirmation flag must remain needs_confirmation
+      expect(res.freshness.status).toBe("needs_confirmation");
+      expect(res.freshness.stateKey).toBe("unconfirmed_expiry");
+      // Explicit provenance / student confirmation evaluates to valid
+      const confirmedRes = extractIncomeCertificateData(text, { isExpiryConfirmed: true });
+      expect(confirmedRes.freshness.status).toBe("valid");
     });
 
     test("correctly computes generic N-year stated validity from issue date and stated duration", () => {
@@ -438,7 +449,68 @@ describe("fieldParsers", () => {
       expect(res.validUpto).toBe("01-01-2029");
       expect(res.issuingAuthority).toBe("Village Officer");
       expect(res.state).toBe("Kerala");
-      expect(res.freshness.status).toBe("valid");
+      // Ordinary OCR parsing must remain needs_confirmation
+      expect(res.freshness.status).toBe("needs_confirmation");
+      expect(res.freshness.stateKey).toBe("unconfirmed_expiry");
+      // Explicit provenance / student confirmation evaluates to valid
+      const confirmedRes = extractIncomeCertificateData(text, { isExpiryConfirmed: true });
+      expect(confirmedRes.freshness.status).toBe("valid");
+    });
+
+    test("actual OCR-parser-to-validity path: extracted date without confirmation flag outputs needs_confirmation; confirmed date evaluates to expired or valid", () => {
+      const text = `
+        Income Certificate
+        Date of Issue: 01/06/2026
+        This certificate is valid until 01/08/2026
+        Total annual income Rs. 1,50,000
+      `;
+
+      // 1. Run ordinary OCR parsing (no options)
+      const ocrResult = extractIncomeCertificateData(text);
+      expect(ocrResult.issueDate).toBe("01-06-2026");
+      expect(ocrResult.validUpto).toBe("01-08-2026");
+      // Ordinary OCR parsing must never set isExpiryConfirmed to true automatically
+      expect(ocrResult.freshness.status).toBe("needs_confirmation");
+      expect(ocrResult.freshness.stateKey).toBe("unconfirmed_expiry");
+
+      // 2. Feed directly into evaluateDocumentValidity without confirmation metadata
+      const unconfirmedDoc = {
+        docType: "Income Certificate",
+        issueDate: ocrResult.issueDate,
+        validUpto: ocrResult.validUpto,
+      };
+      const unconfirmedValidity = evaluateDocumentValidity(unconfirmedDoc);
+      expect(unconfirmedValidity.status).toBe("needs_confirmation");
+      expect(unconfirmedValidity.conceptA_expiry.status).toBe("NEEDS_CONFIRMATION");
+      expect(unconfirmedValidity.conceptA_expiry.message).toContain("OCR extracted expiry date");
+
+      // 3. Feed with student confirmation (e.g. isExpiryConfirmed: true)
+      const confirmedDoc = {
+        ...unconfirmedDoc,
+        isExpiryConfirmed: true,
+      };
+      const confirmedValidity = evaluateDocumentValidity(confirmedDoc);
+      expect(confirmedValidity.status).toBe("expired");
+      expect(confirmedValidity.conceptA_expiry.status).toBe("EXPIRED");
+      expect(confirmedValidity.conceptA_expiry.message).toContain("Document explicitly expired");
+
+      // 4. Future date test
+      const futureText = `
+        Income Certificate
+        Date of Issue: 01/01/2026
+        This certificate is valid until 01/01/2029
+        Total annual income Rs. 1,50,000
+      `;
+      const futureOcr = extractIncomeCertificateData(futureText);
+      expect(futureOcr.freshness.status).toBe("needs_confirmation");
+
+      const futureValidity = evaluateDocumentValidity({
+        docType: "Income Certificate",
+        issueDate: futureOcr.issueDate,
+        validUpto: futureOcr.validUpto,
+        isExpiryConfirmed: true,
+      });
+      expect(futureValidity.conceptA_expiry.status).toBe("NOT_EXPIRED");
     });
 
     test("prioritizes explicit date range over stated duration when both are present", () => {

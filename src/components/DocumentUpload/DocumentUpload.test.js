@@ -178,74 +178,48 @@ describe("Standardized Extracted Details & Multi-State Audit UI", () => {
     },
   };
 
-  test("renders standardized two-column layout, metadata grid, and match badges for all 4 document types", () => {
+  test("renders simplified document cards with minimal default fields and clean status badges", () => {
     const { container } = render(
       <BrowserRouter>
         <DocumentUpload initialDs={mockInitialDs} initialStep={1} />
       </BrowserRouter>
     );
 
-    // 1. Verify Extracted Details headers are present
-    const headers = screen.getAllByText(/Extracted Details & Multi-State Audit/i);
-    expect(headers.length).toBe(4);
-
-    // 2. Verify standardized metadata grids exist
-    const metadataGrids = container.querySelectorAll(".doc-audit-metadata-grid");
-    expect(metadataGrids.length).toBe(4);
-
-    // Verify metadata values
+    // 1. Verify card titles and extracted sections exist for all 4 document types
     expect(screen.getAllByText("10th Marksheet").length).toBeGreaterThanOrEqual(1);
-    expect(screen.getAllByText("FAIR").length).toBe(1);
-    expect(screen.getAllByText("GOOD").length).toBe(3);
-    expect(screen.getByText("91%")).toBeTruthy();
+    expect(screen.getAllByText("12th Marksheet").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText("Income Certificate").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText("Community Certificate").length).toBeGreaterThanOrEqual(1);
 
-    // 3. Verify standardized extracted fields lists exist for all 4 cards
-    const fieldLists = container.querySelectorAll(".extracted-fields-list");
-    expect(fieldLists.length).toBe(4);
+    // 2. Verify minimal default required names are displayed
+    const studentNameOccurrences = screen.getAllByText("Nithishkumar M");
+    expect(studentNameOccurrences.length).toBeGreaterThanOrEqual(3);
 
-    // 4. Verify field rows have both extracted-field-row and ex-row-r classes
-    const fieldRows = container.querySelectorAll(".extracted-field-row");
-    expect(fieldRows.length).toBeGreaterThan(15);
-    fieldRows.forEach(row => {
-      expect(row.classList.contains("ex-row-r")).toBe(true);
-      expect(row.querySelector(".extracted-field-label")).toBeTruthy();
-      expect(row.querySelector(".extracted-field-value")).toBeTruthy();
-      expect(row.querySelector(".extracted-val-text")).toBeTruthy();
-    });
+    // 3. Verify income holder relationship dropdown is present
+    expect(screen.getByLabelText("Confirm holder relationship to student")).toBeTruthy();
 
-    // 5. Test 10th Marksheet fields & long noisy OCR text wrapping
-    expect(screen.getByText(". Yr oa scull aSauaTEnan LEW CRM Lm aegmghm Coan")).toBeTruthy();
-    expect(screen.getByText("Distinction")).toBeTruthy();
-    expect(screen.getByText("1029384")).toBeTruthy();
+    // 4. Verify compact Tools menu buttons are present for uploaded documents
+    const toolsButtons = screen.getAllByText(/Tools ▾/i);
+    expect(toolsButtons.length).toBe(4);
 
-    // 6. Test 12th Marksheet fields
-    expect(screen.getByText("MATRIC HR SEC SCHOOL KANCHAMALAMUR SALEM")).toBeTruthy();
-    expect(screen.getByText("Bio-Maths")).toBeTruthy();
-    expect(screen.getByText("7788991")).toBeTruthy();
-    expect(screen.getByText("A+")).toBeTruthy();
+    // 5. Verify clean status indicators ("Please review" or "Confirmed by you")
+    const reviewBadges = screen.getAllByText(/Please review/i);
+    expect(reviewBadges.length).toBeGreaterThan(0);
 
-    // 7. Test Income Certificate fields
-    expect(screen.getByText("₹1,50,000")).toBeTruthy();
-    expect(screen.getByText("One Lakh Fifty Thousand Only")).toBeTruthy();
-    expect(screen.getByText("TN-2023-INC-89012")).toBeTruthy();
-    expect(screen.getAllByText("Tahsildar Salem").length).toBeGreaterThanOrEqual(1);
+    // 6. Verify unnecessary fields are NOT displayed by default on cards
+    // School name, roll numbers, exam month, taluk, district, certificate number, detailed caste
+    expect(screen.queryByText(". Yr oa scull aSauaTEnan LEW CRM Lm aegmghm Coan")).toBeNull();
+    expect(screen.queryByText("MATRIC HR SEC SCHOOL KANCHAMALAMUR SALEM")).toBeNull();
+    expect(screen.queryByText("1029384")).toBeNull();
+    expect(screen.queryByText("7788991")).toBeNull();
+    expect(screen.queryByText("TN-2023-INC-89012")).toBeNull();
+    expect(screen.queryByText("TN-2022-COMM-34567")).toBeNull();
+    expect(screen.queryByText("Salem South")).toBeNull();
+    expect(screen.queryByText("Vanniyar")).toBeNull();
 
-    // 8. Test Community Certificate fields
-    expect(screen.getByText("Vanniyar")).toBeTruthy();
-    expect(screen.getByText("MBC")).toBeTruthy();
-    expect(screen.getByText("TN-2022-COMM-34567")).toBeTruthy();
-    expect(screen.getAllByText("Zonal Deputy Tahsildar").length).toBeGreaterThanOrEqual(1);
-
-    // 9. Test match badges (e.g. 98% match, 90% match, 92% match)
-    const matchBadges = container.querySelectorAll(".match-badge");
-    expect(matchBadges.length).toBeGreaterThan(0);
-    const badgeTexts = Array.from(matchBadges).map(b => b.textContent.trim());
-    expect(badgeTexts.some(t => t.includes("98% match"))).toBe(true);
-    expect(badgeTexts.some(t => t.includes("90% match"))).toBe(true);
-    expect(badgeTexts.some(t => t.includes("92% match"))).toBe(true);
-
-    // 10. Confirm omitted/non-extracted fields are NOT displayed (no empty or fake values)
-    // Gender was not provided in mock community cert, so GENDER label should not appear
-    expect(screen.queryByText("GENDER")).toBeNull();
+    // 7. Verify developer-facing "Field Match" percentages are NOT displayed
+    const allText = container.textContent;
+    expect(allText.includes("% match")).toBe(false);
+    expect(allText.includes("Field Match")).toBe(false);
   });
 });

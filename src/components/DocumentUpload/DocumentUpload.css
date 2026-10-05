@@ -222,7 +222,68 @@
 /* Status Pills */
 .status-pill { padding: 6px 14px; border-radius: 20px; font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.5px; border: 1px solid; }
 .status-pill.pending { background: #f8fafc; color: #64748b; border-color: #e2e8f0; }
-.status-pill.active-green { background: #ecfdf5; color: #10b981; border-color: #10b981; }
+.status-pill.active-green, .status-pill.status-confirmed { background: #ecfdf5; color: #059669; border-color: #6ee7b7; }
+.status-pill.status-review { background: #fffbeb; color: #b45309; border-color: #fde68a; }
+.status-pill.status-unreadable { background: #fef2f2; color: #dc2626; border-color: #fca5a5; }
+
+/* Compact Tools Dropdown Menu */
+.doc-tools-container { position: relative; display: inline-block; }
+.doc-tools-trigger {
+  background: #f8fafc; border: 1.5px solid #cbd5e1; border-radius: 6px;
+  padding: 4px 10px; font-size: 11px; font-weight: 700; color: #334155;
+  cursor: pointer; display: flex; align-items: center; gap: 4px; transition: all 0.15s ease;
+}
+.doc-tools-trigger:hover { background: #f1f5f9; border-color: #94a3b8; }
+.doc-tools-menu {
+  position: absolute; right: 0; top: calc(100% + 4px); z-index: 50;
+  background: #ffffff; border: 1.5px solid #e2e8f0; border-radius: 8px;
+  box-shadow: 0 10px 25px -5px rgba(15, 23, 42, 0.15); min-width: 170px;
+  padding: 4px; display: flex; flex-direction: column; gap: 2px;
+}
+.doc-tools-item {
+  width: 100%; text-align: left; padding: 6px 10px; border-radius: 5px;
+  border: none; background: transparent; font-size: 11.5px; font-weight: 600;
+  color: #334155; cursor: pointer; display: flex; align-items: center; gap: 6px;
+  transition: background 0.15s ease;
+}
+.doc-tools-item:hover { background: #f1f5f9; color: #0f172a; }
+.doc-tools-item.danger:hover { background: #fef2f2; color: #dc2626; }
+
+/* Field Status Badges */
+.field-badge-review { background: #fffbeb; color: #b45309; border: 1px solid #fde68a; padding: 2px 7px; border-radius: 4px; font-size: 10px; font-weight: 700; display: inline-flex; align-items: center; gap: 3px; }
+.field-badge-confirmed { background: #ecfdf5; color: #059669; border: 1px solid #6ee7b7; padding: 2px 7px; border-radius: 4px; font-size: 10px; font-weight: 700; display: inline-flex; align-items: center; gap: 3px; }
+.field-badge-unreadable { background: #fef2f2; color: #dc2626; border: 1px solid #fca5a5; padding: 2px 7px; border-radius: 4px; font-size: 10px; font-weight: 700; display: inline-flex; align-items: center; gap: 3px; }
+.field-badge-expired { background: #fef2f2; color: #dc2626; border: 1.5px solid #f87171; padding: 2px 7px; border-radius: 4px; font-size: 10px; font-weight: 800; display: inline-flex; align-items: center; gap: 3px; box-shadow: 0 1px 2px rgba(220, 38, 38, 0.08); }
+
+.status-pill.status-expired { background: #fef2f2; color: #dc2626; border: 1.5px solid #f87171; font-weight: 800; }
+.document-card.card-expired {
+  border-color: #f87171 !important;
+  background: linear-gradient(180deg, rgba(254, 242, 242, 0.75) 0%, rgba(255, 255, 255, 0.95) 70px) !important;
+  box-shadow: 0 4px 20px rgba(239, 68, 68, 0.12) !important;
+}
+.document-card.card-expired .card-top .icon-box {
+  background: #fee2e2 !important;
+  color: #dc2626 !important;
+}
+
+.doc-expiry-alert {
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin-bottom: 12px;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+.doc-expiry-alert.doc-alert-danger {
+  background: #fef2f2;
+  border: 1.5px solid #f87171;
+  color: #991b1b;
+}
+.doc-expiry-alert.doc-alert-warning {
+  background: #fffbeb;
+  border: 1.5px solid #fcd34d;
+  color: #92400e;
+}
 
 .document-card h3 { font-size: 18px; font-weight: 800; color: #0f172a; margin: 0 0 15px 0; }
 
@@ -627,10 +688,10 @@
 .extracted-field-row,
 .ex-row-r {
   display: grid;
-  grid-template-columns: minmax(130px, 40%) minmax(0, 60%);
+  grid-template-columns: 130px minmax(0, 1fr);
   gap: 12px;
   align-items: flex-start;
-  padding: 6px 0;
+  padding: 8px 0;
   border-bottom: 1px solid rgba(0, 0, 0, 0.06);
   width: 100%;
   box-sizing: border-box;
@@ -643,15 +704,14 @@
 
 .extracted-field-label,
 .ex-k-r {
-  font-size: 9.5px;
+  font-size: 10px;
   font-weight: 800;
-  color: #64748b;
+  color: #475569;
   text-transform: uppercase;
-  letter-spacing: 0.05em;
-  line-height: 1.45;
-  padding-top: 1px;
-  word-break: break-word;
-  overflow-wrap: anywhere;
+  letter-spacing: 0.04em;
+  line-height: 1.4;
+  padding-top: 2px;
+  word-break: normal;
   text-align: left;
   min-width: 0;
 }
@@ -661,7 +721,7 @@
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 4px;
+  gap: 2px;
   min-width: 0;
   width: 100%;
   text-align: left;
@@ -669,14 +729,63 @@
 
 .extracted-field-value .value,
 .extracted-val-text {
-  font-size: 11.5px;
+  font-size: 12.5px;
   font-weight: 700;
   color: #0f172a;
-  line-height: 1.45;
+  line-height: 1.35;
   word-break: break-word;
   overflow-wrap: anywhere;
   width: 100%;
   text-align: left;
+}
+
+.field-action-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  width: 100%;
+  margin-top: 3px;
+}
+
+.field-btn-edit,
+.field-btn-confirm {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  line-height: 1.3;
+}
+
+.field-btn-edit {
+  background: #f1f5f9;
+  border: 1px solid #cbd5e1;
+  color: #475569;
+}
+.field-btn-edit:hover {
+  background: #e2e8f0;
+  color: #1e293b;
+}
+
+.field-btn-confirm {
+  background: #f1f5f9;
+  border: 1px solid #cbd5e1;
+  color: #475569;
+}
+.field-btn-confirm.is-confirmed {
+  background: #dcfce7;
+  border-color: #86efac;
+  color: #166534;
+}
+.field-btn-confirm:hover {
+  background: #dcfce7;
+  border-color: #86efac;
+  color: #166534;
 }
 
 .match-badge {
@@ -1124,3 +1233,100 @@
     justify-content: center;
   }
 }
+
+/* ============================================
+   OCR SOURCE-REGION HIGHLIGHTING & INTERACTIVE CROPPING
+   ============================================ */
+.ocr-source-highlight {
+  animation: pulseOcrHighlight 2s infinite alternate ease-in-out;
+}
+
+@keyframes pulseOcrHighlight {
+  0% {
+    box-shadow: 0 0 6px rgba(37, 99, 235, 0.6), inset 0 0 4px rgba(37, 99, 235, 0.3);
+  }
+  100% {
+    box-shadow: 0 0 16px rgba(37, 99, 235, 0.95), inset 0 0 8px rgba(37, 99, 235, 0.45);
+  }
+}
+
+.interactive-crop-overlay {
+  animation: cropBorderDash 1.2s linear infinite;
+}
+
+@keyframes cropBorderDash {
+  to {
+    stroke-dashoffset: -20;
+  }
+}
+
+.crop-control-panel {
+  background: #f8fafc;
+  border: 1.5px solid #cbd5e1;
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-top: 8px;
+}
+
+.crop-slider-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #334155;
+}
+
+.crop-slider-row input[type="range"] {
+  flex: 1;
+  cursor: pointer;
+  accent-color: #d97706;
+}
+
+.crop-nudge-grid {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin: 8px 0;
+  flex-wrap: wrap;
+}
+
+.crop-nudge-btn {
+  background: #fff;
+  border: 1px solid #cbd5e1;
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #1e293b;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.crop-nudge-btn:hover, .crop-nudge-btn:focus {
+  background: #f1f5f9;
+  border-color: #94a3b8;
+  outline: 2px solid #3b82f6;
+}
+
+.source-highlight-btn {
+  transition: all 0.2s ease;
+}
+
+.source-highlight-btn:hover {
+  background: #2563eb !important;
+  color: #ffffff !important;
+  border-color: #1d4ed8 !important;
+}
+
+.source-unavailable-badge {
+  display: inline-block;
+  font-size: 10px;
+  color: #94a3b8;
+  font-style: italic;
+  padding: 2px 4px;
+}
+

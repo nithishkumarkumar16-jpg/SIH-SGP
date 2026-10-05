@@ -44,3 +44,9 @@ node_modules/
 build/
 dist/
 *.log
+
+# Temporary test/browser artifacts
+.chrome-*/
+scratch/
+test_fixtures/
+/tam.traineddata

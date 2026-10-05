@@ -22,6 +22,39 @@ import {
 } from "./fieldNormalizer";
 
 /**
+ * Five Standard Consistency Statuses (per Requirement 4)
+ * - Consistent
+ * - Possible mismatch
+ * - Needs confirmation
+ * - Missing information
+ * - Not applicable
+ * 
+ * Note: Missing information never counts as a successful match.
+ */
+export const STANDARD_CONSISTENCY_STATUSES = {
+  CONSISTENT: "Consistent",
+  POSSIBLE_MISMATCH: "Possible mismatch",
+  NEEDS_CONFIRMATION: "Needs confirmation",
+  MISSING_INFORMATION: "Missing information",
+  MISSING_INFO: "Missing information",
+  NOT_APPLICABLE: "Not applicable",
+};
+
+export const NEUTRAL_NAME_MISMATCH_GUIDANCE =
+  "The names differ. Compare the highlighted text with your original documents. Confirm whether this is an OCR reading error or a document-detail issue.";
+
+export function toStandardConsistencyStatus(status) {
+  if (status === "EXACT_MATCH" || status === "MATCH") return "Consistent";
+  if (status === "LIKELY_MATCH" || status === "MINOR_DIFFERENCE" || status === "NEEDS_REVIEW" || status === "WARNING" || status === "UNREADABLE") {
+    return "Needs confirmation";
+  }
+  if (status === "MISMATCH" || status === "FAIL" || status === "EXPIRED") return "Possible mismatch";
+  if (status === "MISSING" || status === "PENDING" || status === "INCOMPLETE") return "Missing information";
+  if (status === "NOT_APPLICABLE" || status === "NA") return "Not applicable";
+  return "Needs confirmation";
+}
+
+/**
  * Computes Levenshtein edit distance between two strings.
  */
 export function levenshteinDistance(a, b) {
@@ -103,14 +136,26 @@ function checkInitialExpansion(list1, list2) {
  */
 export function compareNames(rawA, rawB, isStrict = false) {
   if (!rawA || !rawB) {
-    return { status: "MISSING", score: 0, explanation: "One or both names are missing." };
+    return {
+      status: "MISSING",
+      standardStatus: "Missing information",
+      score: 0,
+      explanation: "One or both names are missing.",
+      neutralGuidance: "Name information is missing. Missing information does not count as a match.",
+    };
   }
 
   const toksA = getNormalizedNameTokens(rawA);
   const toksB = getNormalizedNameTokens(rawB);
 
   if (toksA.length === 0 || toksB.length === 0) {
-    return { status: "MISSING", score: 0, explanation: "One or both names could not be parsed." };
+    return {
+      status: "MISSING",
+      standardStatus: "Missing information",
+      score: 0,
+      explanation: "One or both names could not be parsed.",
+      neutralGuidance: "Name information could not be parsed.",
+    };
   }
 
   const strA = toksA.join(" ");
@@ -118,7 +163,13 @@ export function compareNames(rawA, rawB, isStrict = false) {
 
   // LEVEL 1: Exact Normalized Match
   if (strA === strB) {
-    return { status: "EXACT_MATCH", score: 1.0, explanation: "Exact character match." };
+    return {
+      status: "EXACT_MATCH",
+      standardStatus: "Consistent",
+      score: 1.0,
+      explanation: "Exact character match.",
+      neutralGuidance: "The applicant names match across compared documents.",
+    };
   }
 
   // LEVEL 2: Token-Order Variation (Permutation, e.g. "Raj Arun Kumar" vs "Arun Kumar Raj")
@@ -127,8 +178,10 @@ export function compareNames(rawA, rawB, isStrict = false) {
   if (sortedA === sortedB) {
     return {
       status: "EXACT_MATCH",
+      standardStatus: "Consistent",
       score: 0.98,
       explanation: "Same name tokens in different word order (e.g. Surname first).",
+      neutralGuidance: "Same name tokens in different word order (e.g. Surname first). Consistent.",
     };
   }
 
@@ -147,14 +200,18 @@ export function compareNames(rawA, rawB, isStrict = false) {
       if (isStrict) {
         return {
           status: "LIKELY_MATCH",
+          standardStatus: "Needs confirmation",
           score: 0.92,
           explanation: "Main names match exactly; one document contains an initial or prefix.",
+          neutralGuidance: "Main names match; one document contains an initial. Student confirmation recommended.",
         };
       }
       return {
         status: "EXACT_MATCH",
+        standardStatus: "Consistent",
         score: 0.95,
         explanation: "Main names match; initial difference is acceptable for marksheets.",
+        neutralGuidance: "Main names match; initial variation is acceptable.",
       };
     }
   }
@@ -163,8 +220,10 @@ export function compareNames(rawA, rawB, isStrict = false) {
   if (checkInitialExpansion(toksA, toksB)) {
     return {
       status: "LIKELY_MATCH",
+      standardStatus: "Needs confirmation",
       score: 0.90,
       explanation: "Name initial matches expanded full name (patronymic expansion).",
+      neutralGuidance: "Initial corresponds to an expanded name token. Confirm against original certificate.",
     };
   }
 
@@ -174,13 +233,10 @@ export function compareNames(rawA, rawB, isStrict = false) {
   let shortMatchCount = 0;
 
   for (const st of shortToks) {
-    // 1. Exact match
     let matchIdx = longToks.findIndex((lt, idx) => !usedLong[idx] && lt === st);
-    // 2. Initial expansion
     if (matchIdx === -1 && st.length === 1) {
       matchIdx = longToks.findIndex((lt, idx) => !usedLong[idx] && lt.length > 1 && lt.startsWith(st));
     }
-    // 3. Typo match (st.length >= 4)
     if (matchIdx === -1 && st.length >= 4) {
       matchIdx = longToks.findIndex((lt, idx) => !usedLong[idx] && lt.length >= 4 && levenshteinDistance(lt, st) <= 1);
     }
@@ -198,8 +254,10 @@ export function compareNames(rawA, rawB, isStrict = false) {
     const extraTokensStr = unmatchedLong.map(t => formatTitleName(t) || t.toUpperCase()).join(", ");
     return {
       status: "NEEDS_REVIEW",
+      standardStatus: "Needs confirmation",
       score: 0.65,
       explanation: `Unexpected additional token(s) ('${extraTokensStr}') detected in document name. Manual review required.`,
+      neutralGuidance: `Unexpected additional token(s) ('${extraTokensStr}') detected. Compare the highlighted text with your original documents.`,
     };
   }
 
@@ -212,22 +270,28 @@ export function compareNames(rawA, rawB, isStrict = false) {
     if (isStrict) {
       return {
         status: "MINOR_DIFFERENCE",
+        standardStatus: "Needs confirmation",
         score: Math.min(similarity, 0.90),
         explanation: `Minor spelling variation (similarity ${(similarity * 100).toFixed(0)}%). Review recommended.`,
+        neutralGuidance: `Minor spelling variation. Compare with original documents to verify if this is an OCR error.`,
       };
     }
     return {
       status: "LIKELY_MATCH",
+      standardStatus: "Needs confirmation",
       score: similarity,
       explanation: `Spelling differs slightly (similarity ${(similarity * 100).toFixed(0)}%), acceptable for marksheets.`,
+      neutralGuidance: `Minor spelling difference. Student review recommended.`,
     };
   }
 
   // LEVEL 7: Significant Difference / Mismatch
   return {
     status: "MISMATCH",
+    standardStatus: "Possible mismatch",
     score: Math.max(0, similarity),
-    explanation: `Names differ significantly ("${rawA}" vs "${rawB}"). Document correction required.`,
+    explanation: `The names differ ("${rawA}" vs "${rawB}"). Compare the highlighted text with your original documents. Confirm whether this is an OCR reading error or a document-detail issue.`,
+    neutralGuidance: NEUTRAL_NAME_MISMATCH_GUIDANCE,
   };
 }
 
@@ -285,115 +349,220 @@ export function verifyNames(profile = {}, result = {}) {
  */
 export function compareDOB(dobA, dobB) {
   if (!dobA || !dobB) {
-    return { status: "MISSING", explanation: "One or both date of birth fields are missing." };
+    return {
+      status: "MISSING",
+      standardStatus: "Missing information",
+      explanation: "One or both date of birth fields are missing.",
+      neutralGuidance: "Date of birth is missing. Missing information does not count as a match.",
+    };
   }
 
   const isoA = normalizeDateToISO(dobA);
   const isoB = normalizeDateToISO(dobB);
 
   if (!isoA || !isoB) {
-    return { status: "UNREADABLE", explanation: "Date format could not be parsed." };
+    return {
+      status: "UNREADABLE",
+      standardStatus: "Needs confirmation",
+      explanation: "Date format could not be parsed.",
+      neutralGuidance: "Date format requires manual confirmation against original documents.",
+    };
   }
 
   if (isoA === isoB) {
-    return { status: "MATCH", explanation: `DOB matches: ${isoA}.` };
+    return {
+      status: "MATCH",
+      standardStatus: "Consistent",
+      explanation: `DOB matches: ${isoA}.`,
+      neutralGuidance: `Date of birth matches (${isoA}). Consistent.`,
+    };
   }
 
   return {
     status: "MISMATCH",
+    standardStatus: "Possible mismatch",
     explanation: `DOB mismatch: ${isoA} vs ${isoB}. Must be identical to Aadhaar.`,
+    neutralGuidance: `The dates of birth differ: ${isoA} vs ${isoB}. Compare with your original documents. Confirm whether this is an OCR reading error or a document-detail issue.`,
   };
 }
 
 /**
  * Computes Income Certificate Freshness & Expiry.
+ *
+ * Implements 4 consistent states:
+ * 1. Confirmed explicit expiry date has passed: "Expired"
+ * 2. Confirmed explicit expiry date is within the next 30 days: "Expiring soon"
+ * 3. OCR found an expiry date but the student has not confirmed it: "Please confirm the expiry date"
+ * 4. No explicit expiry and no verified applicable validity rule: "Validity needs confirmation"
+ *
+ * Enforces issue-date window ONLY when the selected scheme's verified rule requires it.
+ * Never uses universal "issued >12 months ago = expired" fallback.
  */
-export function evaluateIncomeFreshness(issueDate, validUpto) {
-  const now = new Date();
+export function evaluateIncomeFreshness(issueDate, validUpto, options = {}) {
+  // Provenance rule: only treat an expiry date as confirmed if the caller
+  // has EXPLICITLY set isExpiryConfirmed or isConfirmed to true.
+  // A missing flag always means "Needs confirmation" — never implicitly confirmed.
+  const isConfirmed = typeof options === "boolean"
+    ? options
+    : options?.isExpiryConfirmed !== undefined
+      ? Boolean(options.isExpiryConfirmed)
+      : options?.isConfirmed !== undefined
+        ? Boolean(options.isConfirmed)
+        : false; // DEFAULT: unconfirmed — must be explicit
+  const schemeRule = options?.schemeRule || (options?.selectedScheme?.validityRule || null);
+  const now = options?.referenceDate ? new Date(options.referenceDate) : new Date();
 
+  // 0. No dates present at all
+  if (!validUpto && !issueDate) {
+    return {
+      status: "unknown",
+      stateKey: "validity_needs_confirmation",
+      label: "Validity needs confirmation",
+      color: "grey",
+      detail: "No explicit expiry or issue date printed. Validity depends on issuing State Revenue Authority rules and scheme-specific guidelines.",
+      isExpired: false,
+      isExpiringSoon: false,
+      isUnconfirmedExpiry: false,
+    };
+  }
+
+  // 1. Explicit Expiry Date
   if (validUpto) {
     const validD = parseIndianDate(validUpto);
-    if (validD) {
-      if (validD < now) {
-        const monthsAgo = (now - validD) / (1000 * 60 * 60 * 24 * 30);
+    if (validD && !isNaN(validD.getTime())) {
+      // If OCR extracted it but student has NOT confirmed it:
+      if (!isConfirmed) {
+        return {
+          status: "needs_confirmation",
+          stateKey: "unconfirmed_expiry",
+          label: "Please confirm the expiry date",
+          color: "yellow",
+          detail: `OCR extracted expiry date ${validUpto}. Please review and confirm this date against your original certificate.`,
+          isExpired: false,
+          isExpiringSoon: false,
+          isUnconfirmedExpiry: true,
+        };
+      }
+
+      // If student has confirmed the explicit expiry date:
+      if (validD.getTime() < now.getTime()) {
         return {
           status: "expired",
+          stateKey: "expired",
           label: "Expired",
           color: "red",
-          detail: `Certificate expired on ${validUpto} (${Math.round(monthsAgo)} month(s) ago). A fresh certificate is required.`,
+          detail: `Certificate expired on ${validUpto}. A renewed certificate is required.`,
+          isExpired: true,
+          isExpiringSoon: false,
+          isUnconfirmedExpiry: false,
         };
       }
-      const monthsLeft = (validD - now) / (1000 * 60 * 60 * 24 * 30);
-      return {
-        status: monthsLeft < 1 ? "warning" : "valid",
-        label: monthsLeft < 1 ? "Expires Very Soon" : monthsLeft < 3 ? "Valid (Expiring Soon)" : "Valid",
-        color: monthsLeft < 1 ? "yellow" : "green",
-        detail: `Valid upto ${validUpto} (${Math.round(monthsLeft)} month(s) remaining).`,
-      };
-    }
-  }
 
-  if (issueDate) {
-    const issueD = parseIndianDate(issueDate);
-    if (issueD) {
-      const ageMonths = (now - issueD) / (1000 * 60 * 60 * 24 * 30);
-      if (ageMonths > 12) {
-        return {
-          status: "expired",
-          label: "Outdated (>12 Months)",
-          color: "red",
-          detail: `Issued on ${issueDate} (${Math.round(ageMonths)} months ago). NSP requires a certificate from the current financial year.`,
-        };
-      }
-      if (ageMonths > 6) {
+      const daysLeft = Math.round((validD.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+      if (daysLeft <= 30) {
         return {
           status: "warning",
-          label: "Ageing (6-12 Months)",
+          stateKey: "expiring_soon",
+          label: "Expiring soon",
           color: "yellow",
-          detail: `Issued ${Math.round(ageMonths)} months ago. Fresh within 6 months is recommended.`,
+          detail: `Certificate valid upto ${validUpto} (${daysLeft} day(s) remaining).`,
+          isExpired: false,
+          isExpiringSoon: true,
+          isUnconfirmedExpiry: false,
         };
       }
+
       return {
         status: "valid",
-        label: "Fresh (<6 Months)",
+        stateKey: "valid",
+        label: "Valid",
         color: "green",
-        detail: `Issued on ${issueDate} (${Math.round(ageMonths)} month(s) ago) — fresh.`,
+        detail: `Valid upto ${validUpto}.`,
+        isExpired: false,
+        isExpiringSoon: false,
+        isUnconfirmedExpiry: false,
       };
     }
   }
 
+  // 2. Scheme-Specific Issue Date Window (Enforced ONLY when a verified rule is provided and applicable)
+  if (schemeRule && schemeRule.windowMonths && issueDate) {
+    const issueD = parseIndianDate(issueDate);
+    if (issueD && !isNaN(issueD.getTime())) {
+      const diffMonths = (now.getTime() - issueD.getTime()) / (1000 * 60 * 60 * 24 * 30.44);
+      if (diffMonths > schemeRule.windowMonths) {
+        return {
+          status: "outside_window",
+          stateKey: "outside_scheme_window",
+          label: "Outside Scheme Window",
+          color: "yellow",
+          detail: `Issued on ${issueDate}. Selected scheme '${schemeRule.schemeName || "scheme"}' requires a certificate issued within the past ${schemeRule.windowMonths} months.`,
+          isExpired: false,
+          isExpiringSoon: false,
+          isUnconfirmedExpiry: false,
+        };
+      }
+    }
+  }
+
+  // 3. No explicit expiry and no verified applicable validity rule (State Revenue Authority rules apply)
   return {
-    status: "unknown",
-    label: "Unknown Date",
+    status: "needs_confirmation",
+    stateKey: "validity_needs_confirmation",
+    label: "Validity needs confirmation",
     color: "grey",
-    detail: "Issue / validity date could not be read from certificate.",
+    detail: "No explicit expiry date printed. Validity depends on issuing State Revenue Authority rules and scheme-specific guidelines.",
+    isExpired: false,
+    isExpiringSoon: false,
+    isUnconfirmedExpiry: false,
   };
 }
 
 /**
  * Compares Income Certificate amount vs Student entered income.
  */
-export function compareIncome(certIncome, studentIncome, issueDate = null, validUpto = null) {
+export function compareIncome(certIncome, studentIncome, issueDate = null, validUpto = null, options = {}) {
   const numCert = normalizeIncome(certIncome);
   const numStudent = normalizeIncome(studentIncome);
-  const freshness = evaluateIncomeFreshness(issueDate, validUpto);
+  const freshness = evaluateIncomeFreshness(issueDate, validUpto, options);
 
   if (numCert === null && numStudent === null) {
-    return { status: "MISSING", explanation: "Income details not provided.", freshness };
+    return {
+      status: "MISSING",
+      standardStatus: "Missing information",
+      explanation: "Income details not provided.",
+      neutralGuidance: "Income details are missing. Missing information does not count as a match.",
+      freshness,
+    };
   }
 
   if (numCert === null) {
-    return { status: "WARNING", explanation: "Income could not be read from certificate.", freshness };
+    return {
+      status: "WARNING",
+      standardStatus: "Needs confirmation",
+      explanation: "Income could not be read from certificate.",
+      neutralGuidance: "Income could not be extracted from certificate. Manual confirmation required.",
+      freshness,
+    };
   }
 
   if (numStudent === null) {
-    return { status: "WARNING", explanation: "Student entered income is missing.", numCert, freshness };
+    return {
+      status: "WARNING",
+      standardStatus: "Needs confirmation",
+      explanation: "Student entered income is missing.",
+      neutralGuidance: "Entered income is missing. Please enter your annual income to compare.",
+      numCert,
+      freshness,
+    };
   }
 
   if (numCert === numStudent) {
     return {
       status: freshness.status === "expired" ? "EXPIRED" : "MATCH",
+      standardStatus: freshness.status === "expired" ? "Possible mismatch" : "Consistent",
       explanation: `Income matches entered details (₹${numCert.toLocaleString("en-IN")}).`,
+      neutralGuidance: `Income figures match: ₹${numCert.toLocaleString("en-IN")}. Consistent.`,
       numCert,
       numStudent,
       freshness,
@@ -402,7 +571,9 @@ export function compareIncome(certIncome, studentIncome, issueDate = null, valid
 
   return {
     status: "MISMATCH",
+    standardStatus: "Possible mismatch",
     explanation: `Income differs: Certificate shows ₹${numCert.toLocaleString("en-IN")}, but entered income is ₹${numStudent.toLocaleString("en-IN")}.`,
+    neutralGuidance: `The income amounts differ (Certificate: ₹${numCert.toLocaleString("en-IN")} vs Entered: ₹${numStudent.toLocaleString("en-IN")}). Compare with your original documents. Confirm whether this is an OCR reading error or a document-detail issue.`,
     numCert,
     numStudent,
     freshness,
@@ -417,21 +588,38 @@ export function compareCommunity(certCommunity, studentCategory) {
   const normStudent = normalizeCommunity(studentCategory);
 
   if (!normCert && !normStudent) {
-    return { status: "MISSING", explanation: "Community details not provided." };
+    return {
+      status: "MISSING",
+      standardStatus: "Missing information",
+      explanation: "Community details not provided.",
+      neutralGuidance: "Community details are missing. Missing information does not count as a match.",
+    };
   }
 
   if (!normCert) {
-    return { status: "WARNING", explanation: "Community could not be read from certificate." };
+    return {
+      status: "WARNING",
+      standardStatus: "Needs confirmation",
+      explanation: "Community could not be read from certificate.",
+      neutralGuidance: "Community category could not be extracted from certificate. Manual confirmation required.",
+    };
   }
 
   if (!normStudent) {
-    return { status: "WARNING", explanation: "Student entered community is missing." };
+    return {
+      status: "WARNING",
+      standardStatus: "Needs confirmation",
+      explanation: "Student entered community is missing.",
+      neutralGuidance: "Entered category is missing. Please select your category to compare.",
+    };
   }
 
   if (normCert === normStudent) {
     return {
       status: "MATCH",
+      standardStatus: "Consistent",
       explanation: `Category matches: ${normCert}.`,
+      neutralGuidance: `Category matches (${normCert}). Consistent.`,
       normCert,
       normStudent,
     };
@@ -439,7 +627,9 @@ export function compareCommunity(certCommunity, studentCategory) {
 
   return {
     status: "MISMATCH",
+    standardStatus: "Possible mismatch",
     explanation: `Category mismatch: Certificate shows "${normCert}", but entered category is "${normStudent}".`,
+    neutralGuidance: `The categories differ (Certificate: "${normCert}" vs Entered: "${normStudent}"). Compare with your original certificate. Confirm whether this is an OCR reading error or a document-detail issue.`,
     normCert,
     normStudent,
   };
@@ -462,18 +652,104 @@ export function buildCrossDocumentMatrix({
   studentIncome = "",
   studentCategory = "",
   incomeApplicant = "student",
+  holderRelationship = null,
+  selectedScheme = null,
+  hasAadhaarDoc = undefined,
+  hasBankDoc = undefined,
+  hasTenthDoc = undefined,
+  hasTwelfthDoc = undefined,
+  hasCommunityDoc = undefined,
+  hasIncomeDoc = undefined,
+  uploadedDocCount: explicitUploadedDocCount = undefined,
 }) {
-  // 1. All Name Sources
-  const nameSources = [
-    { doc: "Aadhaar Card",          ico: "🪪", val: aadharName.trim() || null, strict: true },
-    { doc: "Community Certificate", ico: "📜", val: communityData?.name || null, strict: true },
-    { doc: "Income Certificate",    ico: "💰", val: incomeData?.name || null, strict: true },
-    { doc: "10th Marksheet",        ico: "📋", val: tenthData?.name || null, strict: false },
-    { doc: "12th Marksheet",        ico: "📋", val: twelfthData?.name || null, strict: false },
-    { doc: "Bank Passbook",         ico: "🏦", val: bankHolder.trim() || null, strict: true },
-  ].filter(s => s.val && String(s.val) !== "null" && String(s.val).trim() !== "");
+  const effectiveRelationship =
+    holderRelationship !== undefined && holderRelationship !== null
+      ? holderRelationship
+      : (incomeData?.holderRelationship || (incomeApplicant === "parent" ? "Parent" : "Self"));
 
-  // Pair-by-pair comparison
+  const isTenthUploaded = hasTenthDoc !== undefined ? Boolean(hasTenthDoc) : Boolean(tenthData?.name || tenthData?.percentage || tenthData?.marksScored);
+  const isTwelfthUploaded = hasTwelfthDoc !== undefined ? Boolean(hasTwelfthDoc) : Boolean(twelfthData?.name || twelfthData?.percentage || twelfthData?.marksScored);
+  const isCommunityUploaded = hasCommunityDoc !== undefined ? Boolean(hasCommunityDoc) : Boolean(communityData?.name || communityData?.caste || communityData?.communityCategory);
+  const isIncomeUploaded = hasIncomeDoc !== undefined ? Boolean(hasIncomeDoc) : Boolean(incomeData?.name || incomeData?.incomeNumber || incomeData?.income);
+  const isAadhaarUploaded = hasAadhaarDoc !== undefined ? Boolean(hasAadhaarDoc) : Boolean(aadharName || aadharDob);
+  const isBankUploaded = hasBankDoc !== undefined ? Boolean(hasBankDoc) : Boolean(bankHolder || bankAccType);
+
+  const calculatedDocCount = [
+    isTenthUploaded,
+    isTwelfthUploaded,
+    isCommunityUploaded,
+    isIncomeUploaded,
+    isAadhaarUploaded,
+    isBankUploaded,
+  ].filter(Boolean).length;
+
+  const uploadedDocCount = explicitUploadedDocCount !== undefined ? explicitUploadedDocCount : calculatedDocCount;
+
+  // 1. Student Name Sources (Income Certificate is included ONLY if holder is Self)
+  const isSelfIncome = effectiveRelationship === "Self";
+  const nameSources = [
+    (aadharName && aadharName.trim() ? {
+      doc: isAadhaarUploaded ? "Aadhaar Card" : "Self-Reported Applicant Name",
+      ico: isAadhaarUploaded ? "🪪" : "👤",
+      val: aadharName.trim(),
+      strict: true,
+      isStudent: true,
+      isDocument: isAadhaarUploaded,
+      isSelfReported: !isAadhaarUploaded,
+    } : null),
+    (isCommunityUploaded && communityData?.name ? {
+      doc: "Community Certificate",
+      ico: "📜",
+      val: communityData.name,
+      strict: true,
+      isStudent: true,
+      isDocument: true,
+      isSelfReported: false,
+    } : null),
+    (isIncomeUploaded && isSelfIncome && incomeData?.name ? {
+      doc: "Income Certificate",
+      ico: "💰",
+      val: incomeData.name,
+      strict: true,
+      isStudent: true,
+      isDocument: true,
+      isSelfReported: false,
+    } : null),
+    (isTenthUploaded && tenthData?.name ? {
+      doc: "10th Marksheet",
+      ico: "📋",
+      val: tenthData.name,
+      strict: false,
+      isStudent: true,
+      isMarksheet: true,
+      isDocument: true,
+      isSelfReported: false,
+    } : null),
+    (isTwelfthUploaded && twelfthData?.name ? {
+      doc: "12th Marksheet",
+      ico: "📋",
+      val: twelfthData.name,
+      strict: false,
+      isStudent: true,
+      isMarksheet: true,
+      isDocument: true,
+      isSelfReported: false,
+    } : null),
+    (bankHolder && bankHolder.trim() ? {
+      doc: isBankUploaded ? "Bank Passbook" : "Self-Reported Account Holder",
+      ico: isBankUploaded ? "🏦" : "👤",
+      val: bankHolder.trim(),
+      strict: true,
+      isStudent: true,
+      isDocument: isBankUploaded,
+      isSelfReported: !isBankUploaded,
+    } : null),
+  ].filter(Boolean);
+
+  const studentDocSources = nameSources.filter(s => s.isDocument);
+  const isMultiDocCheckCompleted = studentDocSources.length >= 2;
+
+  // Pair-by-pair comparison across student names
   const namePairs = [];
   for (let i = 0; i < nameSources.length; i++) {
     for (let j = i + 1; j < nameSources.length; j++) {
@@ -482,38 +758,120 @@ export function buildCrossDocumentMatrix({
       const isStrict = a.strict || b.strict;
       let res = compareNames(a.val, b.val, isStrict);
 
-      // Feature 1: Parent-Income Flow
-      if (incomeApplicant === "parent" && (a.doc === "Income Certificate" || b.doc === "Income Certificate")) {
+      // If comparing marksheets (or marksheet vs another student document) and there is a mismatch:
+      if (res.status === "MISMATCH" && (a.isMarksheet || b.isMarksheet)) {
         res = {
           ...res,
-          parentNameUsed: true,
-          status: "NEEDS_REVIEW",
-          requiresReview: true,
-          explanation: `Parent declared as income applicant (${a.doc === "Income Certificate" ? a.val : b.val}). Student identity match check skipped. Verification required.`,
+          explanation: "This document shows a different student name. Check the original document and confirm whether this is a reading error or the wrong upload.",
+          neutralGuidance: "This document shows a different student name. Check the original document and confirm whether this is a reading error or the wrong upload.",
         };
       }
 
-      namePairs.push({ a, b, isStrict, ...res });
+      const isSelfReportedComparison = a.isSelfReported || b.isSelfReported;
+      namePairs.push({ a, b, isStrict, isSelfReportedComparison, ...res });
+    }
+  }
+
+  // Parent/Guardian Relationship Check for Income Certificate
+  let parentRelationshipCheck = null;
+  if (isIncomeUploaded && incomeData?.name && !isSelfIncome) {
+    const holderName = String(incomeData.name).trim();
+    if (effectiveRelationship === "Parent") {
+      // Find confirmed parent/guardian name across other documents (Community cert, Marksheets)
+      const confirmedParentName = 
+        communityData?.fatherName?.trim() || 
+        tenthData?.fatherName?.trim() || 
+        twelfthData?.fatherName?.trim() || 
+        "";
+
+      if (confirmedParentName) {
+        const comp = compareNames(holderName, confirmedParentName, true);
+        const isConsistent = comp.standardStatus === "Consistent" || comp.status === "EXACT_MATCH" || comp.status === "LIKELY_MATCH";
+        parentRelationshipCheck = {
+          relationship: "Parent",
+          holderName,
+          confirmedParentName,
+          status: isConsistent ? "Consistent" : "Needs confirmation",
+          standardStatus: isConsistent ? "Consistent" : "Needs confirmation",
+          explanation: isConsistent
+            ? `Income certificate holder matches confirmed parent/guardian name (${confirmedParentName}).`
+            : `Income certificate holder (${holderName}) differs from confirmed parent/guardian name (${confirmedParentName}). Please review.`,
+          note: "A confirmed relationship does not automatically prove the certificate meets a scheme's rules.",
+        };
+      } else {
+        // Missing relationship evidence = "Needs confirmation", NEVER mismatch!
+        parentRelationshipCheck = {
+          relationship: "Parent",
+          holderName,
+          confirmedParentName: null,
+          status: "Needs confirmation",
+          standardStatus: "Needs confirmation",
+          explanation: "Needs confirmation: No confirmed parent/guardian name available across other uploaded documents to verify relationship.",
+          note: "Upload community certificate or marksheet showing parent/guardian name to confirm relationship.",
+        };
+      }
+    } else if (effectiveRelationship === "Guardian" || effectiveRelationship === "Other") {
+      parentRelationshipCheck = {
+        relationship: effectiveRelationship,
+        holderName,
+        confirmedParentName: null,
+        status: "Needs confirmation",
+        standardStatus: "Needs confirmation",
+        explanation: `Income certificate held by ${effectiveRelationship} (${holderName}). Manual relationship verification required.`,
+        note: "A confirmed relationship does not automatically prove the certificate meets a scheme's rules.",
+      };
+    } else {
+      // Unknown
+      parentRelationshipCheck = {
+        relationship: "Unknown",
+        holderName,
+        confirmedParentName: null,
+        status: "Needs confirmation",
+        standardStatus: "Needs confirmation",
+        explanation: "Please confirm certificate holder relationship to student (Self / Parent / Guardian / Other). Do not infer solely from similar name.",
+        note: "Relationship confirmation is required for income certificate evaluation.",
+      };
     }
   }
 
   const hasNameMismatch = namePairs.some(p => p.status === "MISMATCH");
-  const hasNameMinor = !hasNameMismatch && namePairs.some(p => p.status === "MINOR_DIFFERENCE" || p.status === "LIKELY_MATCH" || p.status === "NEEDS_REVIEW");
-  const nameConsistencyStatus = nameSources.length < 2 ? "grey" : (hasNameMismatch ? "red" : hasNameMinor ? "yellow" : "green");
+  const hasParentNeedsConf = Boolean(parentRelationshipCheck && parentRelationshipCheck.standardStatus === "Needs confirmation");
+  const hasNameMinor = !hasNameMismatch && (
+    namePairs.some(p => p.status === "MINOR_DIFFERENCE" || p.status === "LIKELY_MATCH" || p.status === "NEEDS_REVIEW") ||
+    hasParentNeedsConf
+  );
 
-  // 2. DOB Sources
+  let nameConsistencyStatus = "not_checked_missing";
+  let nameConsistencyLabel = "Not checked — document missing";
+  if (!isMultiDocCheckCompleted) {
+    nameConsistencyStatus = "not_checked_missing";
+    nameConsistencyLabel = "Not checked — document missing";
+  } else if (hasNameMismatch) {
+    nameConsistencyStatus = "red";
+    nameConsistencyLabel = "Possible mismatch";
+  } else if (hasNameMinor) {
+    nameConsistencyStatus = "yellow";
+    nameConsistencyLabel = "Needs confirmation";
+  } else {
+    nameConsistencyStatus = "green";
+    nameConsistencyLabel = "Consistent";
+  }
+
+  // 2. DOB Sources (Parent DOB is never compared with student DOB)
   const dobSources = [
-    { doc: "Aadhaar Card",          ico: "🪪", val: aadharDob.trim() || null },
-    { doc: "Community Certificate", ico: "📜", val: communityData?.dob || null },
-    { doc: "Income Certificate",    ico: "💰", val: incomeData?.dob || null },
-    { doc: "10th Marksheet",        ico: "📋", val: tenthData?.dob || null },
-    { doc: "12th Marksheet",        ico: "📋", val: twelfthData?.dob || null },
-  ].filter(s => s.val && String(s.val) !== "null" && String(s.val).trim() !== "");
+    (aadharDob.trim() ? { doc: isAadhaarUploaded ? "Aadhaar Card" : "Self-Reported DOB", ico: isAadhaarUploaded ? "🪪" : "👤", val: aadharDob.trim(), isDocument: isAadhaarUploaded } : null),
+    (isCommunityUploaded && communityData?.dob ? { doc: "Community Certificate", ico: "📜", val: communityData.dob, isDocument: true } : null),
+    (isIncomeUploaded && isSelfIncome && incomeData?.dob ? { doc: "Income Certificate", ico: "💰", val: incomeData.dob, isDocument: true } : null),
+    (isTenthUploaded && tenthData?.dob ? { doc: "10th Marksheet", ico: "📋", val: tenthData.dob, isDocument: true } : null),
+    (isTwelfthUploaded && twelfthData?.dob ? { doc: "12th Marksheet", ico: "📋", val: twelfthData.dob, isDocument: true } : null),
+  ].filter(Boolean);
+
+  const hasDobDoc = (isAadhaarUploaded && Boolean(aadharDob)) || (isTenthUploaded && Boolean(tenthData?.dob)) || (isTwelfthUploaded && Boolean(twelfthData?.dob)) || (isCommunityUploaded && Boolean(communityData?.dob));
 
   const dobPairs = [];
   if (aadharDob.trim()) {
     for (const src of dobSources) {
-      if (src.doc !== "Aadhaar Card") {
+      if (src.doc !== "Aadhaar Card" && src.doc !== "Self-Reported DOB") {
         const res = compareDOB(src.val, aadharDob.trim());
         dobPairs.push({ doc: src.doc, ico: src.ico, val: src.val, ...res });
       }
@@ -521,14 +879,39 @@ export function buildCrossDocumentMatrix({
   }
 
   const hasDobMismatch = dobPairs.some(p => p.status === "MISMATCH");
-  const dobConsistencyStatus = !aadharDob.trim() ? "grey" : (hasDobMismatch ? "red" : dobPairs.some(p => p.status === "MATCH") ? "green" : "grey");
+  let dobConsistencyStatus = "not_checked_missing";
+  let dobConsistencyLabel = "Not checked — document missing";
+  if (!hasDobDoc) {
+    dobConsistencyStatus = "not_checked_missing";
+    dobConsistencyLabel = "Not checked — document missing";
+  } else if (!aadharDob.trim()) {
+    dobConsistencyStatus = "grey";
+    dobConsistencyLabel = "Pending reference DOB";
+  } else if (hasDobMismatch) {
+    dobConsistencyStatus = "red";
+    dobConsistencyLabel = "Possible mismatch";
+  } else if (dobPairs.some(p => p.status === "MATCH")) {
+    dobConsistencyStatus = "green";
+    dobConsistencyLabel = "Consistent";
+  } else {
+    dobConsistencyStatus = "grey";
+    dobConsistencyLabel = "Needs confirmation";
+  }
 
   // 3. Income Check
+  const isIncomeExpiryConfirmed = Boolean(
+    incomeData?.isExpiryConfirmed ||
+    incomeData?.confirmedFields?.validUpto
+  );
   const incomeResult = compareIncome(
     incomeData?.incomeNumber || incomeData?.income,
     studentIncome,
     incomeData?.issueDate,
-    incomeData?.validUpto
+    incomeData?.validUpto,
+    {
+      isExpiryConfirmed: isIncomeExpiryConfirmed,
+      selectedScheme,
+    }
   );
 
   // 4. Community Check
@@ -537,6 +920,12 @@ export function buildCrossDocumentMatrix({
     studentCategory
   );
 
+  let bankConsistencyStatus = isBankUploaded ? (bankAccType === "Single" ? "green" : bankAccType === "Joint" ? "red" : "grey") : "not_checked_missing";
+  let bankConsistencyLabel = isBankUploaded ? (bankAccType === "Single" ? "Consistent" : bankAccType === "Joint" ? "Possible mismatch" : "Needs confirmation") : "Not checked — document missing";
+
+  let communityConsistencyStatus = isCommunityUploaded ? (communityResult.status === "MATCH" ? "green" : communityResult.status === "MISMATCH" ? "red" : "grey") : "not_checked_missing";
+  let communityConsistencyLabel = isCommunityUploaded ? (communityResult.standardStatus || "Consistent") : "Not checked — document missing";
+
   // 5. Pre-Submission Readiness / Consistency Score Breakdown
   let scorePoints = 0;
   let maxPoints = 0;
@@ -544,74 +933,121 @@ export function buildCrossDocumentMatrix({
 
   // Name Score (30 pts)
   maxPoints += 30;
-  if (nameConsistencyStatus === "green") {
+  if (!isMultiDocCheckCompleted) {
+    breakdown.push({
+      item: "Document Name Consistency Across Documents",
+      status: "NOT_CHECKED",
+      points: 0,
+      max: 30,
+      label: "Not checked — document missing",
+      note: "Not checked — document missing (at least two uploaded student documents required for multi-document consistency check).",
+    });
+  } else if (nameConsistencyStatus === "green") {
     scorePoints += 30;
-    breakdown.push({ item: "Name Consistency Across Documents", status: "PASS", points: 30, max: 30, note: "All document names match or have acceptable token variations." });
+    breakdown.push({ item: "Document Name Consistency Across Documents", status: "PASS", points: 30, max: 30, label: "Consistent", note: "All document names match or have acceptable token variations." });
   } else if (nameConsistencyStatus === "yellow") {
     scorePoints += 20;
     const note = incomeApplicant === "parent"
       ? "Parent declared as income applicant. Review required for parental relationship."
       : "Minor name formatting/initial difference detected.";
-    breakdown.push({ item: "Name Consistency Across Documents", status: "WARN", points: 20, max: 30, note });
+    breakdown.push({ item: "Document Name Consistency Across Documents", status: "WARN", points: 20, max: 30, label: "Needs confirmation", note });
   } else if (nameConsistencyStatus === "red") {
-    breakdown.push({ item: "Name Consistency Across Documents", status: "FAIL", points: 0, max: 30, note: "Name mismatch detected between key identity documents." });
+    breakdown.push({ item: "Document Name Consistency Across Documents", status: "FAIL", points: 0, max: 30, label: "Possible mismatch", note: "Name mismatch detected between key identity documents." });
   } else {
-    breakdown.push({ item: "Name Consistency Across Documents", status: "PENDING", points: 0, max: 30, note: "Upload documents to verify name consistency." });
+    breakdown.push({ item: "Document Name Consistency Across Documents", status: "PENDING", points: 0, max: 30, label: "Pending", note: "Upload documents to verify name consistency." });
   }
 
   // DOB Score (20 pts)
   maxPoints += 20;
-  if (dobConsistencyStatus === "green") {
+  if (!hasDobDoc) {
+    breakdown.push({
+      item: "Date of Birth Consistency",
+      status: "NOT_CHECKED",
+      points: 0,
+      max: 20,
+      label: "Not checked — document missing",
+      note: "Not checked — document missing (upload Aadhaar card or marksheet showing DOB).",
+    });
+  } else if (dobConsistencyStatus === "green") {
     scorePoints += 20;
-    breakdown.push({ item: "Date of Birth Consistency", status: "PASS", points: 20, max: 20, note: "DOB is consistent with Aadhaar reference." });
+    breakdown.push({ item: "Date of Birth Consistency", status: "PASS", points: 20, max: 20, label: "Consistent", note: "DOB is consistent with Aadhaar reference." });
   } else if (dobConsistencyStatus === "red") {
     scorePoints += 0;
-    breakdown.push({ item: "Date of Birth Consistency", status: "FAIL", points: 0, max: 20, note: "DOB on certificate does not match Aadhaar." });
+    breakdown.push({ item: "Date of Birth Consistency", status: "FAIL", points: 0, max: 20, label: "Possible mismatch", note: "DOB on certificate does not match Aadhaar." });
   } else {
-    breakdown.push({ item: "Date of Birth Consistency", status: "PENDING", points: 0, max: 20, note: "DOB check pending." });
+    breakdown.push({ item: "Date of Birth Consistency", status: "PENDING", points: 0, max: 20, label: "Needs confirmation", note: "DOB check pending." });
   }
 
   // Income Freshness & Consistency (20 pts)
   maxPoints += 20;
-  if (incomeResult.status === "MATCH" && (incomeResult.freshness?.status === "valid" || incomeResult.freshness?.status === "unknown" || !incomeResult.freshness)) {
+  if (!isIncomeUploaded) {
+    breakdown.push({
+      item: "Income Verification & Freshness",
+      status: "NOT_CHECKED",
+      points: 0,
+      max: 20,
+      label: "Not checked — document missing",
+      note: "Not checked — document missing (Income certificate not uploaded).",
+    });
+  } else if (incomeResult.status === "MATCH" && (incomeResult.freshness?.status === "valid" || incomeResult.freshness?.status === "needs_confirmation" || incomeResult.freshness?.status === "unknown")) {
     scorePoints += 20;
-    breakdown.push({ item: "Income Verification & Freshness", status: "PASS", points: 20, max: 20, note: "Income matches student input." });
-  } else if (incomeResult.status === "MATCH" && incomeResult.freshness?.status === "warning") {
+    breakdown.push({ item: "Income Verification & Freshness", status: "PASS", points: 20, max: 20, label: "Consistent", note: "Income matches student input." });
+  } else if (incomeResult.status === "MATCH" && (incomeResult.freshness?.status === "warning" || incomeResult.freshness?.status === "outside_window")) {
     scorePoints += 15;
-    breakdown.push({ item: "Income Verification & Freshness", status: "WARN", points: 15, max: 20, note: "Income matches, but certificate is 6-12 months old." });
-  } else if (incomeResult.status === "EXPIRED" || incomeResult.freshness?.status === "expired") {
-    breakdown.push({ item: "Income Verification & Freshness", status: "FAIL", points: 0, max: 20, note: "Income certificate is older than 12 months." });
+    breakdown.push({ item: "Income Verification & Freshness", status: "WARN", points: 15, max: 20, label: "Needs confirmation", note: incomeResult.freshness?.detail || "Income matches, but certificate requires confirmation." });
+  } else if (incomeResult.status === "EXPIRED" || incomeResult.freshness?.isExpired) {
+    breakdown.push({ item: "Income Verification & Freshness", status: "FAIL", points: 0, max: 20, label: "Expired", note: "Income certificate has expired." });
   } else if (incomeResult.status === "MISMATCH") {
-    breakdown.push({ item: "Income Verification & Freshness", status: "FAIL", points: 0, max: 20, note: "Income amount differs between certificate and student input." });
+    breakdown.push({ item: "Income Verification & Freshness", status: "FAIL", points: 0, max: 20, label: "Possible mismatch", note: "Income amount differs between certificate and student input." });
   } else {
-    breakdown.push({ item: "Income Verification & Freshness", status: "PENDING", points: 0, max: 20, note: "Upload income certificate to verify." });
+    breakdown.push({ item: "Income Verification & Freshness", status: "PENDING", points: 0, max: 20, label: "Pending", note: "Upload income certificate to verify." });
   }
 
   // Community Category Match (15 pts)
   maxPoints += 15;
-  if (communityResult.status === "MATCH") {
+  if (!isCommunityUploaded) {
+    breakdown.push({
+      item: "Community Category Consistency",
+      status: "NOT_CHECKED",
+      points: 0,
+      max: 15,
+      label: "Not checked — document missing",
+      note: "Not checked — document missing (Community Certificate not uploaded; using self-reported category).",
+    });
+  } else if (communityResult.status === "MATCH") {
     scorePoints += 15;
-    breakdown.push({ item: "Community Category Consistency", status: "PASS", points: 15, max: 15, note: "Community category matches certificate." });
+    breakdown.push({ item: "Community Category Consistency", status: "PASS", points: 15, max: 15, label: "Consistent", note: "Community category matches certificate." });
   } else if (communityResult.status === "MISMATCH") {
-    breakdown.push({ item: "Community Category Consistency", status: "FAIL", points: 0, max: 15, note: "Entered category differs from certificate." });
+    breakdown.push({ item: "Community Category Consistency", status: "FAIL", points: 0, max: 15, label: "Possible mismatch", note: "Entered category differs from certificate." });
   } else {
-    breakdown.push({ item: "Community Category Consistency", status: "PENDING", points: 0, max: 15, note: "Upload community certificate to verify." });
+    breakdown.push({ item: "Community Category Consistency", status: "PENDING", points: 0, max: 15, label: "Pending", note: "Upload community certificate to verify." });
   }
 
   // Bank Account Type (15 pts)
   maxPoints += 15;
-  if (bankAccType === "Single") {
+  if (!isBankUploaded) {
+    breakdown.push({
+      item: "Bank Account Verification",
+      status: "NOT_CHECKED",
+      points: 0,
+      max: 15,
+      label: "Not checked — document missing",
+      note: "Not checked — document missing (Bank passbook not uploaded; self-reported Single account pending document verification).",
+    });
+  } else if (bankAccType === "Single") {
     scorePoints += 15;
-    breakdown.push({ item: "Bank Account Type", status: "PASS", points: 15, max: 15, note: "Single Savings Account confirmed (NSP required)." });
+    breakdown.push({ item: "Bank Account Verification", status: "PASS", points: 15, max: 15, label: "Consistent", note: "Single Savings Account confirmed on passbook." });
   } else if (bankAccType === "Joint") {
-    breakdown.push({ item: "Bank Account Type", status: "FAIL", points: 0, max: 15, note: "Joint accounts are rejected for NSP direct benefit transfer." });
+    breakdown.push({ item: "Bank Account Verification", status: "FAIL", points: 0, max: 15, label: "Rejected", note: "Joint accounts are rejected for NSP direct benefit transfer." });
   } else {
-    breakdown.push({ item: "Bank Account Type", status: "PENDING", points: 0, max: 15, note: "Bank details pending." });
+    breakdown.push({ item: "Bank Account Verification", status: "PENDING", points: 0, max: 15, label: "Pending", note: "Bank details pending." });
   }
 
   const consistencyPercentage = maxPoints > 0 ? Math.round((scorePoints / maxPoints) * 100) : 0;
   let overallReadiness = "Needs Review";
-  if (hasNameMismatch || hasDobMismatch || bankAccType === "Joint" || incomeResult.status === "EXPIRED" || communityResult.status === "MISMATCH") {
+  if (uploadedDocCount < 2) {
+    overallReadiness = "Partial Documentation — Multi-Document Check Incomplete";
+  } else if (hasNameMismatch || hasDobMismatch || bankAccType === "Joint" || incomeResult.status === "EXPIRED" || communityResult.status === "MISMATCH") {
     overallReadiness = "Issues Found — Correction Required";
   } else if (consistencyPercentage >= 85) {
     overallReadiness = "High Consistency — Ready for Official Application";
@@ -619,8 +1055,62 @@ export function buildCrossDocumentMatrix({
     overallReadiness = "Moderate Consistency — Review Warnings";
   }
 
+  const unresolvedIssues = [];
+  if (tenthData && !tenthData.name) {
+    unresolvedIssues.push({ doc: "10th Marksheet", field: "Student Name", message: "Could not read required student name on 10th Marksheet." });
+  }
+  if (twelfthData && !twelfthData.name) {
+    unresolvedIssues.push({ doc: "12th Marksheet", field: "Student Name", message: "Could not read required student name on 12th Marksheet." });
+  }
+  if (communityData && !communityData.name) {
+    unresolvedIssues.push({ doc: "Community Certificate", field: "Student Name", message: "Could not read required student name on Community Certificate." });
+  }
+  if (incomeData && !incomeData.name) {
+    unresolvedIssues.push({ doc: "Income Certificate", field: "Holder Name", message: "Could not read certificate holder name on Income Certificate." });
+  }
+  namePairs.forEach(p => {
+    if (p.status === "MISMATCH") {
+      unresolvedIssues.push({
+        doc: `${p.a.doc} vs ${p.b.doc}`,
+        field: "Student Name",
+        message: (p.a.isMarksheet || p.b.isMarksheet)
+          ? "This document shows a different student name. Check the original document and confirm whether this is a reading error or the wrong upload."
+          : `Name difference between ${p.a.doc} (${p.a.val}) and ${p.b.doc} (${p.b.val}).`,
+      });
+    }
+  });
+  if (parentRelationshipCheck && parentRelationshipCheck.standardStatus === "Needs confirmation") {
+    unresolvedIssues.push({
+      doc: "Income Certificate",
+      field: "Holder Relationship",
+      message: parentRelationshipCheck.explanation,
+    });
+  }
+  if (incomeResult?.freshness?.isExpired) {
+    unresolvedIssues.push({
+      doc: "Income Certificate",
+      field: "Expiry Date",
+      message: incomeResult.freshness.detail || `Income certificate expired on ${incomeData?.validUpto}. A renewed certificate is required.`,
+    });
+  } else if (incomeResult?.freshness?.isUnconfirmedExpiry) {
+    unresolvedIssues.push({
+      doc: "Income Certificate",
+      field: "Expiry Date",
+      message: `OCR extracted expiry date (${incomeData?.validUpto}). Please review and confirm this date against the document.`,
+    });
+  } else if (incomeResult?.freshness?.status === "outside_window") {
+    unresolvedIssues.push({
+      doc: "Income Certificate",
+      field: "Issue Date",
+      message: incomeResult.freshness.detail,
+    });
+  }
+
   return {
     incomeApplicant,
+    holderRelationship: effectiveRelationship,
+    parentRelationshipCheck,
+    unresolvedIssues,
     nameSources,
     namePairs,
     nameConsistencyStatus,
@@ -630,6 +1120,14 @@ export function buildCrossDocumentMatrix({
     dobPairs,
     dobConsistencyStatus,
     hasDobMismatch,
+    uploadedDocCount,
+    isMultiDocCheckCompleted,
+    nameConsistencyLabel,
+    dobConsistencyLabel,
+    bankConsistencyStatus,
+    bankConsistencyLabel,
+    communityConsistencyStatus,
+    communityConsistencyLabel,
     incomeResult,
     communityResult,
     scorePoints,
@@ -840,8 +1338,9 @@ export function evaluateCrossDocumentCase(documents = {}) {
     }
   }
 
-  // Parent name comparisons
+  // Parent name comparisons (do not compare income holder's father name with student's father name: these represent different generations)
   const parentEntries = validDocs
+    .filter(d => (d.docType || d.type) !== "income")
     .map(d => ({ docType: d.docType || "document", parentName: String(d.parentName || d.fatherName || d.motherName || "").trim() }))
     .filter(e => e.parentName && e.parentName.toLowerCase() !== "null" && e.parentName.toLowerCase() !== "not_detected");
 

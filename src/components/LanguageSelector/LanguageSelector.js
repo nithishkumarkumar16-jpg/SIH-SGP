@@ -28,7 +28,8 @@ function setGoogleTranslateLanguage(langCode) {
   const combo = document.querySelector(".goog-te-combo");
   if (combo) {
     combo.value = langCode;
-    combo.dispatchEvent(new Event("change"));
+    combo.dispatchEvent(new Event("change", { bubbles: true }));
+    document.cookie = "googtrans=/en/" + langCode + "; path=/";
   } else {
     // Fallback: set cookie and reload
     const cookie = "/en/" + langCode;
