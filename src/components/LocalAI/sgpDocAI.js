@@ -191,12 +191,31 @@ async function prepareRawImage(file) {
 export async function runOCR(file, onProgress, qualityAssessment = null, isMarksheet = false, lang = "eng", options = {}) {
   const ocrLang = options.langs || (lang === "tam" ? "tam" : (lang === "eng+tam" || lang === "all" ? ["eng", "tam"] : "eng"));
 
+  const rawPages = file.type === "application/pdf"
+    ? await renderPDFPages(file)
+    : [await prepareRawImage(file)];
+
+  const numPages = rawPages.length;
+  const willRunMultiPass = isMarksheet || (qualityAssessment && (qualityAssessment.qualityLevel === "fair" || qualityAssessment.qualityLevel === "poor"));
+  const expectedPasses = willRunMultiPass ? 4 : 1;
+
+  // Track progress across all pages and passes so it never resets or starts over
+  const progressTracker = {
+    completedUnits: 0,
+    totalUnits: Math.max(1, numPages * expectedPasses),
+    maxPct: 1,
+  };
+
   const worker = await createWorker(ocrLang, 1, {
     ...getLocalTesseractOptions(),
     logger: (m) => {
       if (options.isCancelled?.() || options.signal?.aborted) return;
       if (m.status === "recognizing text" && onProgress) {
-        onProgress(Math.round(m.progress * 100));
+        const rawProg = Math.max(0, Math.min(1, typeof m.progress === "number" ? m.progress : 0));
+        const total = Math.max(1, progressTracker.totalUnits);
+        const currentOverall = ((progressTracker.completedUnits + rawProg) / total) * 100;
+        progressTracker.maxPct = Math.max(progressTracker.maxPct, Math.min(99, Math.round(currentOverall)));
+        onProgress(progressTracker.maxPct);
       }
     },
   });
@@ -205,10 +224,6 @@ export async function runOCR(file, onProgress, qualityAssessment = null, isMarks
     if (options.isCancelled?.() || options.signal?.aborted) {
       throw new Error("OCR operation was cancelled.");
     }
-
-    const rawPages = file.type === "application/pdf"
-      ? await renderPDFPages(file)
-      : [await prepareRawImage(file)];
 
     const pagesText = [];
     const allLines = [];
@@ -266,6 +281,9 @@ export async function runOCR(file, onProgress, qualityAssessment = null, isMarks
         confidences.push(data.confidence);
       }
       allLines.push(...extractLinesFromData(data, standardCanvas, index));
+      progressTracker.completedUnits++;
+      progressTracker.maxPct = Math.max(progressTracker.maxPct, Math.min(99, Math.round((progressTracker.completedUnits / progressTracker.totalUnits) * 100)));
+      onProgress?.(progressTracker.maxPct);
     }
 
     const avgConfidence = confidences.length
@@ -275,10 +293,14 @@ export async function runOCR(file, onProgress, qualityAssessment = null, isMarks
     const multiPasses = [];
 
     // Additional passes for difficult documents: compare normalized (illumination), binarized, and sharpened
-    const shouldRunMultiPass = isMarksheet || (qualityAssessment && (qualityAssessment.qualityLevel === "fair" || qualityAssessment.qualityLevel === "poor")) || (avgConfidence !== null && avgConfidence < 75);
+    const shouldRunMultiPass = willRunMultiPass || (avgConfidence !== null && avgConfidence < 75);
     if (shouldRunMultiPass && rawPages.length > 0) {
       const variantsToRun = ["normalized", "sharpened", "binarized"];
-      for (const variant of variantsToRun) {
+      if (!willRunMultiPass) {
+        progressTracker.totalUnits = progressTracker.completedUnits + (variantsToRun.length * rawPages.length);
+      }
+      for (let vi = 0; vi < variantsToRun.length; vi++) {
+        const variant = variantsToRun[vi];
         if (options.isCancelled?.() || options.signal?.aborted) break;
         try {
           const vPagesText = [];
@@ -289,6 +311,9 @@ export async function runOCR(file, onProgress, qualityAssessment = null, isMarks
             const { data: vData } = await worker.recognize(vCanvas, {}, { blocks: true, text: true });
             vPagesText.push(vData.text || "");
             vLines.push(...extractLinesFromData(vData, vCanvas, index));
+            progressTracker.completedUnits++;
+            progressTracker.maxPct = Math.max(progressTracker.maxPct, Math.min(99, Math.round((progressTracker.completedUnits / progressTracker.totalUnits) * 100)));
+            onProgress?.(progressTracker.maxPct);
           }
           multiPasses.push({
             variant,
@@ -300,6 +325,8 @@ export async function runOCR(file, onProgress, qualityAssessment = null, isMarks
         }
       }
     }
+
+    onProgress?.(100);
 
     return {
       text: pagesText.join("\n\n"),

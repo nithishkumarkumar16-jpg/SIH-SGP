@@ -1076,6 +1076,11 @@ export default function DocumentUpload({ initialDs = null, initialStep = 1 } = {
     const controller = new AbortController();
     activeAbortControllers.current[type] = controller;
 
+    // Track the highest OCR percentage seen so far for this job so the UI
+    // never shows a lower number than it already displayed (monotonic guard).
+    let maxPctSeen = 0;
+    let lastUpdateTime = 0;
+
     setDs(p => ({ ...p, [type]: { ...p[type], loading: true, err: null, progressMsg: "Starting OCR..." } }));
 
     try {
@@ -1085,10 +1090,20 @@ export default function DocumentUpload({ initialDs = null, initialStep = 1 } = {
         type,
         (prog) => {
           if (activeJobSeqs.current[type] !== seq) return;
-          setDs(p => ({
-            ...p,
-            [type]: { ...p[type], progressMsg: prog.msg || `Reading document... ${prog.pct || 0}%` },
-          }));
+          // Enforce monotonically-increasing progress: never go back to a lower %
+          const newPct = prog.pct || 0;
+          const now = Date.now();
+          if (newPct >= maxPctSeen || prog.stage === "done" || newPct >= 100) {
+            maxPctSeen = Math.max(maxPctSeen, newPct);
+            const msg = prog.msg || `Reading document... ${maxPctSeen}%`;
+            if (prog.stage === "done" || newPct >= 100 || now - lastUpdateTime > 60) {
+              lastUpdateTime = now;
+              setDs(p => ({
+                ...p,
+                [type]: { ...p[type], progressMsg: msg },
+              }));
+            }
+          }
         },
         {
           lang: ocrLang,
